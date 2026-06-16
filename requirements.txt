@@ -1,4 +1,6 @@
+```txt
 streamlit
 scipy
 networkx
 matplotlib
+numpy
