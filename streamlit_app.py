@@ -1,696 +1,495 @@
 import streamlit as st
-import math
-import copy
-from scipy.optimize import linprog
+import pandas as pd
 import networkx as nx
 import matplotlib.pyplot as plt
+import heapq
+import math
 
 
 # ============================================================
 # CONFIGURACION GENERAL
 # ============================================================
-st.set_page_config(page_title="Euing Gas - Branch & Bound", layout="wide")
+st.set_page_config(page_title="Ruta más corta - Dijkstra", layout="wide")
 
-st.title("Optimizador de Programación Lineal Entera")
-st.subheader("Branch & Bound con n variables y n restricciones")
+st.title("Optimizador de Ruta Más Corta")
+st.subheader("Algoritmo de Dijkstra con tablas iterativas")
 
 st.markdown(
-    "Esta aplicación resuelve problemas de programación lineal entera usando "
-    "**Branch & Bound**. Incluye un botón para cargar automáticamente el ejercicio "
-    "de **Euing Gas**."
+    "Este programa permite resolver el problema de la ruta más corta desde un nodo origen "
+    "hasta un nodo destino. Incluye el ejercicio de la figura desde **A hasta J**, pero también "
+    "puedes ingresar otro grafo personalizado."
 )
 
 
 # ============================================================
-# FUNCIONES AUXILIARES
+# DATOS DEL EJERCICIO DE LA IMAGEN
 # ============================================================
-def es_entero(valor, tol=1e-6):
-    return abs(valor - round(valor)) <= tol
+def cargar_ejercicio_imagen():
+    st.session_state.nodos_texto = "A,B,C,D,E,F,G,H,I,J"
+    st.session_state.origen = "A"
+    st.session_state.destino = "J"
+    st.session_state.dirigido = True
+
+    st.session_state.aristas_texto = """A,B,2
+A,C,4
+A,D,3
+B,E,7
+B,F,4
+B,G,6
+C,E,3
+C,F,2
+C,G,4
+D,E,4
+D,F,1
+D,G,5
+E,H,1
+E,I,4
+F,H,6
+F,I,3
+G,H,3
+G,I,3
+H,J,3
+I,J,4"""
 
 
-def mejor_que(z_nuevo, z_actual, es_max):
-    if es_max:
-        return z_nuevo > z_actual + 1e-6
-    return z_nuevo < z_actual - 1e-6
+# ============================================================
+# FUNCIONES
+# ============================================================
+def limpiar_nodo(x):
+    return str(x).strip().upper()
 
 
-def peor_o_igual_que(z_nodo, z_mejor, es_max):
-    if es_max:
-        return z_nodo <= z_mejor + 1e-6
-    return z_nodo >= z_mejor - 1e-6
+def leer_nodos(nodos_texto):
+    nodos = []
+    partes = nodos_texto.replace("\n", ",").split(",")
+
+    for p in partes:
+        nodo = limpiar_nodo(p)
+        if nodo != "" and nodo not in nodos:
+            nodos.append(nodo)
+
+    return nodos
 
 
-def convertir_float(valor, defecto=0.0):
-    try:
-        if valor is None or valor == "":
-            return defecto
-        return float(valor)
-    except Exception:
-        return defecto
+def leer_aristas(aristas_texto):
+    aristas = []
+    errores = []
 
+    lineas = aristas_texto.strip().splitlines()
 
-def convertir_cota_superior(valor):
-    try:
-        if valor is None or valor == "":
-            return None
-        return float(valor)
-    except Exception:
-        return None
+    for i, linea in enumerate(lineas, start=1):
+        linea = linea.strip()
 
-
-def inicializar_euing_gas():
-    st.session_state.tipo_opt = "Maximizar"
-    st.session_state.n_vars = 11
-    st.session_state.n_rest = 13
-
-    nombres = ["G1", "G2", "A11", "A12", "A21", "A22", "P1", "P2", "P3", "Y2", "Y3"]
-
-    tipos = [
-        "Continua", "Continua", "Continua", "Continua", "Continua", "Continua",
-        "Continua", "Continua", "Continua", "Binaria", "Binaria"
-    ]
-
-    # Objetivo en centavos:
-    # Max Z = 12G1 + 14G2 - 25P1 - 20P2 - 15P3
-    c = [12, 14, 0, 0, 0, 0, -25, -20, -15, 0, 0]
-
-    lb = [0] * 11
-    ub = [None, None, None, None, None, None, 500, 500, 500, 1, 1]
-
-    restricciones = []
-
-    restricciones.append({
-        "nombre": "Balance gasolina 1",
-        "coef": [-1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0],
-        "signo": "=",
-        "b": 0
-    })
-
-    restricciones.append({
-        "nombre": "Balance gasolina 2",
-        "coef": [0, -1, 0, 0, 1, 1, 0, 0, 0, 0, 0],
-        "signo": "=",
-        "b": 0
-    })
-
-    restricciones.append({
-        "nombre": "Gas 1 con mínimo 50% de aceite 1",
-        "coef": [0.5, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0],
-        "signo": "<=",
-        "b": 0
-    })
-
-    restricciones.append({
-        "nombre": "Gas 2 con mínimo 60% de aceite 1",
-        "coef": [0, 0.6, 0, 0, -1, 0, 0, 0, 0, 0, 0],
-        "signo": "<=",
-        "b": 0
-    })
-
-    restricciones.append({
-        "nombre": "Disponibilidad de aceite 1",
-        "coef": [0, 0, 1, 0, 1, 0, -1, -1, -1, 0, 0],
-        "signo": "<=",
-        "b": 500
-    })
-
-    restricciones.append({
-        "nombre": "Disponibilidad de aceite 2",
-        "coef": [0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0],
-        "signo": "<=",
-        "b": 1000
-    })
-
-    restricciones.append({
-        "nombre": "P1 máximo 500",
-        "coef": [0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0],
-        "signo": "<=",
-        "b": 500
-    })
-
-    restricciones.append({
-        "nombre": "P2 máximo 500",
-        "coef": [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
-        "signo": "<=",
-        "b": 500
-    })
-
-    restricciones.append({
-        "nombre": "P3 máximo 500",
-        "coef": [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0],
-        "signo": "<=",
-        "b": 500
-    })
-
-    # P2 <= 500Y2
-    restricciones.append({
-        "nombre": "Activar bloque 2",
-        "coef": [0, 0, 0, 0, 0, 0, 0, 1, 0, -500, 0],
-        "signo": "<=",
-        "b": 0
-    })
-
-    # P1 >= 500Y2  -> -P1 + 500Y2 <= 0
-    restricciones.append({
-        "nombre": "Llenar bloque 1 antes del bloque 2",
-        "coef": [0, 0, 0, 0, 0, 0, -1, 0, 0, 500, 0],
-        "signo": "<=",
-        "b": 0
-    })
-
-    # P3 <= 500Y3
-    restricciones.append({
-        "nombre": "Activar bloque 3",
-        "coef": [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, -500],
-        "signo": "<=",
-        "b": 0
-    })
-
-    # P2 >= 500Y3 -> -P2 + 500Y3 <= 0
-    restricciones.append({
-        "nombre": "Llenar bloque 2 antes del bloque 3",
-        "coef": [0, 0, 0, 0, 0, 0, 0, -1, 0, 0, 500],
-        "signo": "<=",
-        "b": 0
-    })
-
-    for j in range(11):
-        st.session_state[f"nombre_{j}"] = nombres[j]
-        st.session_state[f"tipo_var_{j}"] = tipos[j]
-        st.session_state[f"c_{j}"] = float(c[j])
-        st.session_state[f"lb_{j}"] = str(lb[j])
-        st.session_state[f"ub_{j}"] = "" if ub[j] is None else str(ub[j])
-
-    for i, rest in enumerate(restricciones):
-        st.session_state[f"rest_nombre_{i}"] = rest["nombre"]
-        st.session_state[f"signo_{i}"] = rest["signo"]
-        st.session_state[f"b_{i}"] = float(rest["b"])
-        for j in range(11):
-            st.session_state[f"a_{i}_{j}"] = float(rest["coef"][j])
-
-
-def preparar_matrices(n_vars, n_rest):
-    nombres_vars = []
-    tipos_vars = []
-    c = []
-    bounds = []
-
-    for j in range(n_vars):
-        nombre = st.session_state.get(f"nombre_{j}", f"x{j + 1}")
-        tipo = st.session_state.get(f"tipo_var_{j}", "Continua")
-        coef = convertir_float(st.session_state.get(f"c_{j}", 0.0))
-
-        lb = convertir_float(st.session_state.get(f"lb_{j}", 0.0), 0.0)
-        ub = convertir_cota_superior(st.session_state.get(f"ub_{j}", ""))
-
-        if tipo == "Binaria":
-            lb = 0.0
-            ub = 1.0
-
-        nombres_vars.append(nombre)
-        tipos_vars.append(tipo)
-        c.append(coef)
-        bounds.append((lb, ub))
-
-    A_ub = []
-    b_ub = []
-    A_eq = []
-    b_eq = []
-
-    for i in range(n_rest):
-        fila = []
-        for j in range(n_vars):
-            fila.append(convertir_float(st.session_state.get(f"a_{i}_{j}", 0.0)))
-
-        signo = st.session_state.get(f"signo_{i}", "<=")
-        b = convertir_float(st.session_state.get(f"b_{i}", 0.0))
-
-        if all(abs(x) < 1e-12 for x in fila) and abs(b) < 1e-12:
+        if linea == "":
             continue
 
-        if signo == "<=":
-            A_ub.append(fila)
-            b_ub.append(b)
-        elif signo == ">=":
-            A_ub.append([-x for x in fila])
-            b_ub.append(-b)
+        partes = linea.split(",")
+
+        if len(partes) != 3:
+            errores.append(f"Línea {i}: debe tener formato Origen,Destino,Costo")
+            continue
+
+        u = limpiar_nodo(partes[0])
+        v = limpiar_nodo(partes[1])
+
+        try:
+            costo = float(partes[2])
+        except Exception:
+            errores.append(f"Línea {i}: el costo no es numérico")
+            continue
+
+        if costo < 0:
+            errores.append(f"Línea {i}: Dijkstra no permite costos negativos")
+            continue
+
+        aristas.append((u, v, costo))
+
+    return aristas, errores
+
+
+def construir_grafo(nodos, aristas, dirigido=True):
+    if dirigido:
+        G = nx.DiGraph()
+    else:
+        G = nx.Graph()
+
+    G.add_nodes_from(nodos)
+
+    for u, v, costo in aristas:
+        G.add_edge(u, v, weight=costo)
+
+        if u not in G.nodes:
+            G.add_node(u)
+        if v not in G.nodes:
+            G.add_node(v)
+
+    return G
+
+
+def dijkstra_con_tablas(nodos, aristas, origen, destino, dirigido=True):
+    adj = {n: [] for n in nodos}
+
+    for u, v, costo in aristas:
+        if u not in adj:
+            adj[u] = []
+        if v not in adj:
+            adj[v] = []
+
+        adj[u].append((v, costo))
+
+        if not dirigido:
+            adj[v].append((u, costo))
+
+    dist = {n: math.inf for n in adj.keys()}
+    prev = {n: None for n in adj.keys()}
+    definitivo = {n: False for n in adj.keys()}
+
+    dist[origen] = 0
+
+    cola = [(0, origen)]
+    tablas = []
+    historial = []
+    iteracion = 0
+
+    while cola:
+        distancia_actual, nodo_actual = heapq.heappop(cola)
+
+        if definitivo[nodo_actual]:
+            continue
+
+        definitivo[nodo_actual] = True
+        iteracion += 1
+
+        historial.append(
+            f"Iteración {iteracion}: se selecciona el nodo {nodo_actual} "
+            f"con distancia acumulada {distancia_actual:g}."
+        )
+
+        actualizaciones = []
+
+        for vecino, costo in adj.get(nodo_actual, []):
+            if definitivo[vecino]:
+                continue
+
+            nueva_distancia = dist[nodo_actual] + costo
+
+            if nueva_distancia < dist[vecino]:
+                dist[vecino] = nueva_distancia
+                prev[vecino] = nodo_actual
+                heapq.heappush(cola, (nueva_distancia, vecino))
+
+                actualizaciones.append(
+                    f"{vecino}: nueva distancia {nueva_distancia:g}, "
+                    f"predecesor {nodo_actual}"
+                )
+
+        if len(actualizaciones) == 0:
+            historial.append("  No hubo actualizaciones.")
         else:
-            A_eq.append(fila)
-            b_eq.append(b)
+            for act in actualizaciones:
+                historial.append("  " + act)
 
-    return nombres_vars, tipos_vars, c, bounds, A_ub, b_ub, A_eq, b_eq
+        tabla = []
+
+        for n in sorted(adj.keys()):
+            if dist[n] == math.inf:
+                distancia_mostrar = "∞"
+            else:
+                distancia_mostrar = dist[n]
+
+            tabla.append({
+                "Nodo": n,
+                "Distancia tentativa": distancia_mostrar,
+                "Predecesor": "-" if prev[n] is None else prev[n],
+                "Definitivo": "Sí" if definitivo[n] else "No"
+            })
+
+        tablas.append({
+            "iteracion": iteracion,
+            "nodo_actual": nodo_actual,
+            "tabla": pd.DataFrame(tabla)
+        })
+
+        if nodo_actual == destino:
+            break
+
+    if dist.get(destino, math.inf) == math.inf:
+        return None, math.inf, tablas, historial, dist, prev
+
+    ruta = []
+    actual = destino
+
+    while actual is not None:
+        ruta.append(actual)
+        actual = prev[actual]
+
+    ruta.reverse()
+
+    return ruta, dist[destino], tablas, historial, dist, prev
 
 
-def resolver_lp(c_scipy, A_ub, b_ub, A_eq, b_eq, bounds):
-    return linprog(
-        c_scipy,
-        A_ub=A_ub if len(A_ub) > 0 else None,
-        b_ub=b_ub if len(b_ub) > 0 else None,
-        A_eq=A_eq if len(A_eq) > 0 else None,
-        b_eq=b_eq if len(b_eq) > 0 else None,
-        bounds=bounds,
-        method="highs"
-    )
+def dibujar_grafo(G, ruta=None):
+    fig, ax = plt.subplots(figsize=(13, 7))
 
+    try:
+        pos = nx.multipartite_layout(
+            G,
+            subset_key=lambda n: {
+                "A": 0,
+                "B": 1,
+                "C": 1,
+                "D": 1,
+                "E": 2,
+                "F": 2,
+                "G": 2,
+                "H": 3,
+                "I": 3,
+                "J": 4
+            }.get(n, 0)
+        )
+    except Exception:
+        pos = nx.spring_layout(G, seed=7)
 
-def dibujar_arbol(tree):
-    if len(tree.nodes()) == 0 or 0 not in tree.nodes:
-        st.info("No hay árbol para mostrar.")
-        return
+    colores_nodos = []
 
-    def jerarquia(graph, nodo, x=0.5, y=0, ancho=1.0, dy=0.25, pos=None):
-        if pos is None:
-            pos = {}
-        pos[nodo] = (x, y)
-        hijos = list(graph.successors(nodo))
+    if ruta is None:
+        ruta = []
 
-        if len(hijos) == 1:
-            jerarquia(graph, hijos[0], x, y - dy, ancho / 2, dy, pos)
-        elif len(hijos) >= 2:
-            jerarquia(graph, hijos[0], x - ancho / 4, y - dy, ancho / 2, dy, pos)
-            jerarquia(graph, hijos[1], x + ancho / 4, y - dy, ancho / 2, dy, pos)
-
-        return pos
-
-    pos = jerarquia(tree, 0)
-
-    fig, ax = plt.subplots(figsize=(16, 9))
-
-    colores = [tree.nodes[n].get("color", "white") for n in tree.nodes()]
-    etiquetas = nx.get_node_attributes(tree, "label")
-    etiquetas_aristas = nx.get_edge_attributes(tree, "label")
+    for n in G.nodes:
+        if n in ruta:
+            colores_nodos.append("#99FF99")
+        else:
+            colores_nodos.append("#D9EAF7")
 
     nx.draw_networkx_nodes(
-        tree,
+        G,
         pos,
-        node_color=colores,
-        node_size=3600,
+        node_size=1300,
+        node_color=colores_nodos,
         edgecolors="black",
         ax=ax
     )
+
     nx.draw_networkx_labels(
-        tree,
+        G,
         pos,
-        labels=etiquetas,
-        font_size=8,
-        ax=ax
-    )
-    nx.draw_networkx_edges(
-        tree,
-        pos,
-        arrows=True,
-        arrowstyle="-|>",
-        arrowsize=14,
-        ax=ax
-    )
-    nx.draw_networkx_edge_labels(
-        tree,
-        pos,
-        edge_labels=etiquetas_aristas,
-        font_size=8,
-        rotate=False,
+        font_size=12,
+        font_weight="bold",
         ax=ax
     )
 
+    nx.draw_networkx_edges(
+        G,
+        pos,
+        arrows=True,
+        arrowstyle="-|>",
+        arrowsize=18,
+        width=1.5,
+        ax=ax
+    )
+
+    edge_labels = nx.get_edge_attributes(G, "weight")
+
+    edge_labels_limpios = {}
+    for k, v in edge_labels.items():
+        if float(v).is_integer():
+            edge_labels_limpios[k] = str(int(v))
+        else:
+            edge_labels_limpios[k] = str(v)
+
+    nx.draw_networkx_edge_labels(
+        G,
+        pos,
+        edge_labels=edge_labels_limpios,
+        font_size=11,
+        ax=ax
+    )
+
+    if ruta is not None and len(ruta) > 1:
+        aristas_ruta = []
+
+        for i in range(len(ruta) - 1):
+            aristas_ruta.append((ruta[i], ruta[i + 1]))
+
+        nx.draw_networkx_edges(
+            G,
+            pos,
+            edgelist=aristas_ruta,
+            arrows=True,
+            arrowstyle="-|>",
+            arrowsize=22,
+            width=4,
+            edge_color="#00AA00",
+            ax=ax
+        )
+
     ax.axis("off")
-    ax.margins(0.15)
     st.pyplot(fig)
 
 
 # ============================================================
-# FORMULACION DEL EJERCICIO
+# VALORES INICIALES
 # ============================================================
-with st.expander("Ver formulación del ejercicio Euing Gas", expanded=False):
-    st.markdown("### Variables")
-    st.markdown(
-        "- G1: galones de gasolina 1 producidos\n"
-        "- G2: galones de gasolina 2 producidos\n"
-        "- A11: aceite 1 usado en gasolina 1\n"
-        "- A12: aceite 2 usado en gasolina 1\n"
-        "- A21: aceite 1 usado en gasolina 2\n"
-        "- A22: aceite 2 usado en gasolina 2\n"
-        "- P1: compra de aceite 1 en el primer bloque, a 25 centavos\n"
-        "- P2: compra de aceite 1 en el segundo bloque, a 20 centavos\n"
-        "- P3: compra de aceite 1 en el tercer bloque, a 15 centavos\n"
-        "- Y2: variable binaria para activar bloque 2\n"
-        "- Y3: variable binaria para activar bloque 3"
-    )
-
-    st.markdown("### Función objetivo")
-    st.latex(r"Max\ Z = 12G1 + 14G2 - 25P1 - 20P2 - 15P3")
-
-    st.markdown("### Restricciones principales")
-    st.markdown(
-        "- Balance de mezcla: el aceite usado debe igualar la gasolina producida.\n"
-        "- Gasolina 1: al menos 50% de aceite 1.\n"
-        "- Gasolina 2: al menos 60% de aceite 1.\n"
-        "- Aceite 1 disponible: 500 galones más compras adicionales.\n"
-        "- Aceite 2 disponible: 1000 galones.\n"
-        "- Las compras de aceite 1 se dividen en tres bloques de 500 galones."
-    )
+if "nodos_texto" not in st.session_state:
+    cargar_ejercicio_imagen()
 
 
 # ============================================================
 # ENTRADA DE DATOS
 # ============================================================
-st.header("1. Datos del problema")
+st.header("1. Definir el grafo")
 
-col_boton, col_info = st.columns([1, 3])
-
-with col_boton:
-    if st.button("Cargar ejercicio Euing Gas"):
-        inicializar_euing_gas()
-        st.success("Ejercicio cargado. Ahora presiona Ejecutar Branch & Bound.")
-
-with col_info:
-    st.info("Puedes usar el ejercicio cargado o modificar variables y restricciones manualmente.")
-
-tipo_opt = st.selectbox(
-    "Tipo de optimización",
-    ["Maximizar", "Minimizar"],
-    key="tipo_opt"
-)
-
-col1, col2, col3 = st.columns(3)
+col1, col2 = st.columns([1, 3])
 
 with col1:
-    n_vars = st.number_input(
-        "Número de variables",
-        min_value=1,
-        max_value=30,
-        value=int(st.session_state.get("n_vars", 3)),
-        step=1,
-        key="n_vars"
-    )
+    if st.button("Cargar ejercicio de la imagen"):
+        cargar_ejercicio_imagen()
+        st.success("Ejercicio cargado.")
 
 with col2:
-    n_rest = st.number_input(
-        "Número de restricciones",
-        min_value=1,
-        max_value=100,
-        value=int(st.session_state.get("n_rest", 3)),
-        step=1,
-        key="n_rest"
+    st.info(
+        "Puedes usar el ejercicio de la imagen o modificar los nodos y caminos "
+        "para resolver otro problema."
     )
 
-with col3:
-    max_nodos = st.number_input(
-        "Máximo de nodos",
-        min_value=10,
-        max_value=10000,
-        value=1000,
-        step=10
+st.markdown("---")
+
+col_a, col_b, col_c = st.columns(3)
+
+with col_a:
+    origen = st.text_input(
+        "Nodo origen",
+        value=st.session_state.get("origen", "A"),
+        key="origen"
     )
 
-
-# ============================================================
-# VARIABLES
-# ============================================================
-st.header("2. Variables y función objetivo")
-
-st.caption("La cota superior puede quedar vacía si no existe límite superior.")
-
-for j in range(int(n_vars)):
-    cols = st.columns([1.3, 1.2, 1.2, 1.2, 1.2])
-
-    with cols[0]:
-        st.text_input(
-            f"Nombre variable {j + 1}",
-            value=st.session_state.get(f"nombre_{j}", f"x{j + 1}"),
-            key=f"nombre_{j}"
-        )
-
-    with cols[1]:
-        valor_tipo = st.session_state.get(f"tipo_var_{j}", "Continua")
-        if valor_tipo not in ["Continua", "Entera", "Binaria"]:
-            valor_tipo = "Continua"
-        st.selectbox(
-            f"Tipo {j + 1}",
-            ["Continua", "Entera", "Binaria"],
-            index=["Continua", "Entera", "Binaria"].index(valor_tipo),
-            key=f"tipo_var_{j}"
-        )
-
-    with cols[2]:
-        st.number_input(
-            f"Coeficiente Z {j + 1}",
-            value=float(st.session_state.get(f"c_{j}", 0.0)),
-            step=1.0,
-            key=f"c_{j}"
-        )
-
-    with cols[3]:
-        st.text_input(
-            f"Cota inferior {j + 1}",
-            value=str(st.session_state.get(f"lb_{j}", 0.0)),
-            key=f"lb_{j}"
-        )
-
-    with cols[4]:
-        st.text_input(
-            f"Cota superior {j + 1}",
-            value=str(st.session_state.get(f"ub_{j}", "")),
-            key=f"ub_{j}"
-        )
-
-
-# ============================================================
-# RESTRICCIONES
-# ============================================================
-st.header("3. Restricciones")
-
-for i in range(int(n_rest)):
-    with st.expander(f"Restricción {i + 1}", expanded=True):
-        st.text_input(
-            f"Nombre R{i + 1}",
-            value=st.session_state.get(f"rest_nombre_{i}", f"R{i + 1}"),
-            key=f"rest_nombre_{i}"
-        )
-
-        inicio = 0
-        while inicio < int(n_vars):
-            fin = min(inicio + 6, int(n_vars))
-            columnas = st.columns(fin - inicio)
-
-            for idx, j in enumerate(range(inicio, fin)):
-                with columnas[idx]:
-                    nombre_var = st.session_state.get(f"nombre_{j}", f"x{j + 1}")
-                    st.number_input(
-                        f"{nombre_var} en R{i + 1}",
-                        value=float(st.session_state.get(f"a_{i}_{j}", 0.0)),
-                        step=1.0,
-                        key=f"a_{i}_{j}"
-                    )
-
-            inicio = fin
-
-        col_s, col_b = st.columns([1, 2])
-
-        with col_s:
-            signo_actual = st.session_state.get(f"signo_{i}", "<=")
-            if signo_actual not in ["<=", ">=", "="]:
-                signo_actual = "<="
-            st.selectbox(
-                f"Signo R{i + 1}",
-                ["<=", ">=", "="],
-                index=["<=", ">=", "="].index(signo_actual),
-                key=f"signo_{i}"
-            )
-
-        with col_b:
-            st.number_input(
-                f"Lado derecho R{i + 1}",
-                value=float(st.session_state.get(f"b_{i}", 0.0)),
-                step=1.0,
-                key=f"b_{i}"
-            )
-
-
-# ============================================================
-# EJECUCION BRANCH AND BOUND
-# ============================================================
-st.header("4. Ejecutar")
-
-if st.button("Ejecutar Branch & Bound", type="primary"):
-    es_max = tipo_opt == "Maximizar"
-
-    nombres_vars, tipos_vars, c_original, bounds, A_ub, b_ub, A_eq, b_eq = preparar_matrices(
-        int(n_vars),
-        int(n_rest)
+with col_b:
+    destino = st.text_input(
+        "Nodo destino",
+        value=st.session_state.get("destino", "J"),
+        key="destino"
     )
 
-    c_scipy = [-coef for coef in c_original] if es_max else c_original[:]
+with col_c:
+    dirigido = st.checkbox(
+        "Grafo dirigido",
+        value=st.session_state.get("dirigido", True),
+        key="dirigido"
+    )
 
-    mejor_z = -float("inf") if es_max else float("inf")
-    mejor_x = None
+nodos_texto = st.text_area(
+    "Nodos separados por coma",
+    value=st.session_state.get("nodos_texto", "A,B,C,D,E,F,G,H,I,J"),
+    height=80,
+    key="nodos_texto"
+)
 
-    consola = []
-    tree = nx.DiGraph()
+st.markdown("### Caminos o aristas")
 
-    nodos_pila = [{
-        "id": 0,
-        "A_ub": copy.deepcopy(A_ub),
-        "b_ub": copy.deepcopy(b_ub),
-        "A_eq": copy.deepcopy(A_eq),
-        "b_eq": copy.deepcopy(b_eq),
-        "parent": None,
-        "edge": "Raíz"
-    }]
+st.markdown(
+    "Escribe cada camino en una línea con el formato:"
+)
 
-    contador_nodos = 0
-    nodos_explorados = 0
+st.code("Origen,Destino,Costo", language="text")
 
-    while nodos_pila and nodos_explorados < int(max_nodos):
-        nodo = nodos_pila.pop()
-        nodos_explorados += 1
+aristas_texto = st.text_area(
+    "Lista de caminos",
+    value=st.session_state.get("aristas_texto", ""),
+    height=300,
+    key="aristas_texto"
+)
 
-        tree.add_node(nodo["id"], label=f"N{nodo['id']}", color="#BFD7EA")
 
-        if nodo["parent"] is not None:
-            tree.add_edge(nodo["parent"], nodo["id"], label=nodo["edge"])
+# ============================================================
+# PROCESAR DATOS
+# ============================================================
+nodos = leer_nodos(nodos_texto)
+aristas, errores = leer_aristas(aristas_texto)
 
-        consola.append(f"Explorando Nodo {nodo['id']}")
+origen_limpio = limpiar_nodo(origen)
+destino_limpio = limpiar_nodo(destino)
 
-        res = resolver_lp(
-            c_scipy,
-            nodo["A_ub"],
-            nodo["b_ub"],
-            nodo["A_eq"],
-            nodo["b_eq"],
-            bounds
-        )
+for u, v, c in aristas:
+    if u not in nodos:
+        nodos.append(u)
+    if v not in nodos:
+        nodos.append(v)
 
-        if not res.success:
-            consola.append("  Podado: problema infactible.\n")
-            tree.nodes[nodo["id"]]["color"] = "#FF9999"
-            tree.nodes[nodo["id"]]["label"] = f"N{nodo['id']}\nInfactible"
-            continue
 
-        x = res.x
-        z = -res.fun if es_max else res.fun
+if errores:
+    st.error("Hay errores en los datos ingresados:")
+    for e in errores:
+        st.write(e)
 
-        consola.append(f"  Z relajado = {z:.4f}")
-        consola.append(
-            "  Solución relajada: " +
-            ", ".join([f"{nombres_vars[j]}={x[j]:.4f}" for j in range(int(n_vars))])
-        )
 
-        if mejor_x is not None and peor_o_igual_que(z, mejor_z, es_max):
-            consola.append(f"  Podado por cota. Mejor Z actual = {mejor_z:.4f}\n")
-            tree.nodes[nodo["id"]]["color"] = "#FFD699"
-            tree.nodes[nodo["id"]]["label"] = f"N{nodo['id']}\nZ={z:.2f}\nPodado"
-            continue
+# ============================================================
+# MOSTRAR DATOS CARGADOS
+# ============================================================
+st.header("2. Datos cargados")
 
-        idx_frac = None
-        val_frac = None
+col_datos1, col_datos2 = st.columns(2)
 
-        for j in range(int(n_vars)):
-            if tipos_vars[j] in ["Entera", "Binaria"] and not es_entero(x[j]):
-                idx_frac = j
-                val_frac = x[j]
-                break
+with col_datos1:
+    st.markdown("### Nodos")
+    st.write(", ".join(nodos))
 
-        if idx_frac is None:
-            if mejor_x is None or mejor_que(z, mejor_z, es_max):
-                mejor_z = z
-                mejor_x = x.copy()
-
-            consola.append("  Solución entera factible encontrada.")
-            consola.append(f"  Mejor Z actualizado = {mejor_z:.4f}\n")
-
-            tree.nodes[nodo["id"]]["color"] = "#99FF99"
-            tree.nodes[nodo["id"]]["label"] = f"N{nodo['id']}\nZ={z:.2f}\nEntero"
-            continue
-
-        nombre_var = nombres_vars[idx_frac]
-        piso = math.floor(val_frac)
-        techo = math.ceil(val_frac)
-
-        consola.append(f"  Variable fraccionaria: {nombre_var} = {val_frac:.4f}")
-        consola.append(f"  Ramificación: {nombre_var} <= {piso} y {nombre_var} >= {techo}\n")
-
-        tree.nodes[nodo["id"]]["color"] = "#99CCFF"
-        tree.nodes[nodo["id"]]["label"] = f"N{nodo['id']}\nZ={z:.2f}\nBranch"
-
-        # Rama izquierda: x <= floor(valor)
-        A_izq = copy.deepcopy(nodo["A_ub"])
-        b_izq = copy.deepcopy(nodo["b_ub"])
-        fila_izq = [0.0] * int(n_vars)
-        fila_izq[idx_frac] = 1.0
-        A_izq.append(fila_izq)
-        b_izq.append(float(piso))
-
-        contador_nodos += 1
-        nodos_pila.append({
-            "id": contador_nodos,
-            "A_ub": A_izq,
-            "b_ub": b_izq,
-            "A_eq": copy.deepcopy(nodo["A_eq"]),
-            "b_eq": copy.deepcopy(nodo["b_eq"]),
-            "parent": nodo["id"],
-            "edge": f"{nombre_var} <= {piso}"
-        })
-
-        # Rama derecha: x >= ceil(valor), equivalente a -x <= -ceil(valor)
-        A_der = copy.deepcopy(nodo["A_ub"])
-        b_der = copy.deepcopy(nodo["b_ub"])
-        fila_der = [0.0] * int(n_vars)
-        fila_der[idx_frac] = -1.0
-        A_der.append(fila_der)
-        b_der.append(float(-techo))
-
-        contador_nodos += 1
-        nodos_pila.append({
-            "id": contador_nodos,
-            "A_ub": A_der,
-            "b_ub": b_der,
-            "A_eq": copy.deepcopy(nodo["A_eq"]),
-            "b_eq": copy.deepcopy(nodo["b_eq"]),
-            "parent": nodo["id"],
-            "edge": f"{nombre_var} >= {techo}"
-        })
-
-    st.header("5. Historial de Branch & Bound")
-    st.code("\n".join(consola), language="text")
-
-    if nodos_explorados >= int(max_nodos):
-        st.warning("Se alcanzó el límite máximo de nodos. Puedes aumentar el límite.")
-
-    st.header("6. Solución final")
-
-    if mejor_x is None:
-        st.error("No se encontró una solución entera factible.")
+with col_datos2:
+    st.markdown("### Caminos")
+    if len(aristas) > 0:
+        df_aristas = pd.DataFrame(aristas, columns=["Origen", "Destino", "Costo"])
+        st.dataframe(df_aristas, use_container_width=True)
     else:
-        st.success(f"Mejor valor de Z encontrado: {mejor_z:.4f} centavos")
+        st.warning("No hay caminos cargados.")
 
-        tabla = []
-        for j in range(int(n_vars)):
-            tabla.append({
-                "Variable": nombres_vars[j],
-                "Tipo": tipos_vars[j],
-                "Valor": round(float(mejor_x[j]), 6)
-            })
 
-        st.dataframe(tabla, use_container_width=True)
+# ============================================================
+# EJECUCION
+# ============================================================
+st.header("3. Resolver ruta más corta")
 
-        if int(n_vars) == 11:
-            st.markdown("### Interpretación del ejercicio Euing Gas")
-            st.write(f"Gasolina 1 producida: **{mejor_x[0]:.4f} galones**")
-            st.write(f"Gasolina 2 producida: **{mejor_x[1]:.4f} galones**")
-            st.write(f"Aceite 1 usado en gasolina 1: **{mejor_x[2]:.4f} galones**")
-            st.write(f"Aceite 2 usado en gasolina 1: **{mejor_x[3]:.4f} galones**")
-            st.write(f"Aceite 1 usado en gasolina 2: **{mejor_x[4]:.4f} galones**")
-            st.write(f"Aceite 2 usado en gasolina 2: **{mejor_x[5]:.4f} galones**")
-            st.write(f"Compra bloque 1: **{mejor_x[6]:.4f} galones**")
-            st.write(f"Compra bloque 2: **{mejor_x[7]:.4f} galones**")
-            st.write(f"Compra bloque 3: **{mejor_x[8]:.4f} galones**")
+if st.button("Calcular ruta más corta", type="primary"):
+    if len(errores) > 0:
+        st.error("Corrige los errores antes de ejecutar.")
+    elif origen_limpio not in nodos:
+        st.error(f"El nodo origen {origen_limpio} no existe.")
+    elif destino_limpio not in nodos:
+        st.error(f"El nodo destino {destino_limpio} no existe.")
+    else:
+        G = construir_grafo(nodos, aristas, dirigido=dirigido)
 
-    st.header("7. Árbol de ramificación")
-    st.markdown(
-        "- Azul: nodo ramificado\n"
-        "- Verde: solución entera factible\n"
-        "- Rojo: nodo infactible\n"
-        "- Naranja: podado por cota"
-    )
+        ruta, costo, tablas, historial, dist, prev = dijkstra_con_tablas(
+            nodos=nodos,
+            aristas=aristas,
+            origen=origen_limpio,
+            destino=destino_limpio,
+            dirigido=dirigido
+        )
 
-    dibujar_arbol(tree)
+        st.header("4. Resultado final")
+
+        if ruta is None:
+            st.error(f"No existe una ruta desde {origen_limpio} hasta {destino_limpio}.")
+            dibujar_grafo(G, ruta=[])
+        else:
+            st.success(f"Ruta más corta: {' → '.join(ruta)}")
+            st.success(f"Costo mínimo total: {costo:g}")
+
+            st.markdown("### Interpretación")
+            st.write(
+                f"Para ir desde **{origen_limpio}** hasta **{destino_limpio}**, "
+                f"la ruta recomendada es **{' → '.join(ruta)}**, con un costo total de **{costo:g}**."
+            )
+
+            st.header("5. Grafo con la ruta resaltada")
+            dibujar_grafo(G, ruta=ruta)
+
+            st.header("6. Historial del algoritmo")
+            st.code("\n".join(historial), language="text")
+
+            st.header("7. Tablas iterativas")
+
+            for item in tablas:
+                st.markdown(
+                    f"### Iteración {item['iteracion']} - Nodo seleccionado: {item['nodo_actual']}"
+                )
+                st.dataframe(item["tabla"], use_container_width=True)
