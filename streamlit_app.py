@@ -65,115 +65,99 @@ Selecciona una opción en el menú para comenzar.
 # ==============================
 # 1 VARIABLE
 # ==============================
+
 elif menu == "1. Optimización no restringida (1 variable)":
-    
+
     st.header("🔹 Optimización no restringida de una sola variable")
-    st.write("Aquí se implementarán métodos como Bisección y Newton para una variable.")
-    st.header("🔹 Optimización no restringida (1 variable)")
-st.subheader("📌 Método de Bisección (basado en f'(x)=0)")
+    st.subheader("📌 Método de Bisección (basado en f'(x)=0)")
 
-x = sp.Symbol('x')
+    x = sp.Symbol('x')
 
-# =========================
-# INPUTS
-# =========================
-func_input = st.text_input("Ingresa f(x)", "x^3 - 6*x^2 + 9*x + 1")
+    # =========================
+    # INPUTS
+    # =========================
+    func_input = st.text_input("Ingresa f(x)", "x^3 - 6*x^2 + 9*x + 1")
 
-a = st.number_input("Intervalo a", value=0.0)
-b = st.number_input("Intervalo b", value=3.0)
+    a = st.number_input("Intervalo a", value=0.0)
+    b = st.number_input("Intervalo b", value=3.0)
 
-tol = st.number_input("Tolerancia", value=0.0001, format="%.6f")
-max_iter = st.number_input("Iteraciones", value=50)
+    tol = st.number_input("Tolerancia", value=0.0001, format="%.6f")
+    max_iter = st.number_input("Iteraciones", value=50)
 
-# =========================
-# BOTÓN
-# =========================
-if st.button("🚀 Ejecutar Bisección"):
+    # =========================
+    # BOTÓN
+    # =========================
+    if st.button("🚀 Ejecutar Bisección"):
 
-    try:
-        # =========================
-        # FUNCIONES
-        # =========================
-        f_sym = sp.sympify(func_input)
-        df_sym = sp.diff(f_sym, x)
+        try:
+            f_sym = sp.sympify(func_input)
+            df_sym = sp.diff(f_sym, x)
 
-        f = sp.lambdify(x, f_sym, "numpy")
-        df = sp.lambdify(x, df_sym, "numpy")
+            f = sp.lambdify(x, f_sym, "numpy")
+            df = sp.lambdify(x, df_sym, "numpy")
 
-        st.latex(f"f(x) = {sp.latex(f_sym)}")
-        st.latex(f"f'(x) = {sp.latex(df_sym)}")
+            st.latex(f"f(x) = {sp.latex(f_sym)}")
+            st.latex(f"f'(x) = {sp.latex(df_sym)}")
 
-        # =========================
-        # VALIDACIÓN (como MATLAB)
-        # =========================
-        if df(a) * df(b) > 0:
-            st.error("❌ f'(a)*f'(b) debe ser < 0. Cambia el intervalo.")
-        else:
+            if df(a) * df(b) > 0:
+                st.error("❌ f'(a)*f'(b) debe ser < 0. Cambia el intervalo.")
+            else:
 
-            iter_list = []
-            m_prev = 0
+                iter_list = []
+                m_prev = 0
 
-            for i in range(int(max_iter)):
+                for i in range(int(max_iter)):
 
-                m = (a + b) / 2
+                    m = (a + b) / 2
 
-                fa = df(a)
-                fm = df(m)
+                    fa = df(a)
+                    fm = df(m)
 
-                error = abs(m - m_prev) if i > 0 else abs(b - a)
+                    error = abs(m - m_prev) if i > 0 else abs(b - a)
 
-                iter_list.append([i, a, b, m, fa, fm, error])
+                    iter_list.append([i, a, b, m, fa, fm, error])
 
-                if abs(fm) < tol or error < tol:
-                    break
+                    if abs(fm) < tol or error < tol:
+                        break
 
-                if fa * fm < 0:
-                    b = m
-                else:
-                    a = m
+                    if fa * fm < 0:
+                        b = m
+                    else:
+                        a = m
 
-                m_prev = m
+                    m_prev = m
 
-            # =========================
-            # TABLA
-            # =========================
-            df_table = pd.DataFrame(iter_list, columns=[
-                "Iter", "a", "b", "m", "f'(a)", "f'(m)", "Error"
-            ])
+                import pandas as pd
+                df_table = pd.DataFrame(iter_list, columns=[
+                    "Iter", "a", "b", "m", "f'(a)", "f'(m)", "Error"
+                ])
 
-            st.subheader("📊 Iteraciones")
-            st.dataframe(df_table)
+                st.subheader("📊 Iteraciones")
+                st.dataframe(df_table)
 
-            x_opt = df_table["m"].iloc[-1]
-            y_opt = f(x_opt)
+                x_opt = df_table["m"].iloc[-1]
+                y_opt = f(x_opt)
 
-            st.success(f"✔ Óptimo aproximado: x = {x_opt}")
-            st.success(f"✔ f(x) = {y_opt}")
+                st.success(f"✔ Óptimo: x = {x_opt}")
+                st.success(f"✔ f(x) = {y_opt}")
 
-            # =========================
-            # GRÁFICA
-            # =========================
-            st.subheader("📈 Gráfica")
+                import matplotlib.pyplot as plt
+                import numpy as np
 
-            xs = np.linspace(x_opt - 3, x_opt + 3, 300)
-            ys = f(xs)
+                xs = np.linspace(x_opt - 3, x_opt + 3, 300)
+                ys = f(xs)
 
-            plt.figure()
-            plt.plot(xs, ys, label="f(x)")
-            plt.axvline(x_opt, color="red", linestyle="--", label="Óptimo")
-            plt.scatter([x_opt], [y_opt], color="red")
+                plt.figure()
+                plt.plot(xs, ys, label="f(x)")
+                plt.axvline(x_opt, color="red", linestyle="--")
+                plt.scatter([x_opt], [y_opt], color="red")
+                plt.grid()
+                plt.legend()
 
-            plt.grid()
-            plt.legend()
+                st.pyplot(plt)
 
-            st.pyplot(plt)
-
-    except Exception as e:
-        st.error(f"Error: {e}")
-
-# ==============================
-# VARIAS VARIABLES
-# ==============================
+        except Exception as e:
+            st.error(f"Error: {e}")
 elif menu == "2. Optimización no restringida (varias variables)":
     st.header("🔹 Optimización no restringida de varias variables")
     st.write("Aquí se implementarán métodos de gradiente y Newton multivariable.")
