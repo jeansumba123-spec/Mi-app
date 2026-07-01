@@ -1,113 +1,106 @@
-import streamlit as st
+import sympy as sp
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-# ==============================
-# CONFIGURACIÓN
-# ==============================
-st.set_page_config(
-    page_title="Examen Final - IO",
-    layout="wide"
-)
+st.header("🔹 Optimización no restringida (1 variable)")
+st.subheader("📌 Método de Bisección (basado en f'(x)=0)")
 
-# ==============================
-# HEADER
-# ==============================
-st.title("📘 Examen Final de Investigación de Operaciones")
-st.subheader("Programación No Lineal")
+x = sp.Symbol('x')
 
-st.sidebar.title("👨‍🎓 Integrantes")
-st.sidebar.write("Jean Sumba")
-st.sidebar.write("Juan Pacheco")
+# =========================
+# INPUTS
+# =========================
+func_input = st.text_input("Ingresa f(x)", "x^3 - 6*x^2 + 9*x + 1")
 
-menu = st.sidebar.selectbox(
-    "Seleccione el tema",
-    [
-        "Inicio",
-        "1. Bisección (1 variable)",
-        "2. Varias variables",
-        "3. Linealmente restringida",
-        "4. Cuadrática"
-    ]
-)
+a = st.number_input("Intervalo a", value=0.0)
+b = st.number_input("Intervalo b", value=3.0)
 
-# ==============================
-# FUNCIONES DEL EJEMPLO (DIAPOSITIVAS)
-# ==============================
-def f(x):
-    return 12*x - 3*x**4 - 2*x**6
+tol = st.number_input("Tolerancia", value=0.0001, format="%.6f")
+max_iter = st.number_input("Iteraciones", value=50)
 
-def df(x):
-    return 12*(1 - x**3 - x**5)
+# =========================
+# BOTÓN
+# =========================
+if st.button("🚀 Ejecutar Bisección"):
 
-# ==============================
-# BISSECTION METHOD (como diapositivas)
-# ==============================
-def biseccion(a, b, tol=1e-4, max_iter=50):
-    data = []
+    try:
+        # =========================
+        # FUNCIONES
+        # =========================
+        f_sym = sp.sympify(func_input)
+        df_sym = sp.diff(f_sym, x)
 
-    for i in range(max_iter):
-        x = (a + b) / 2
-        fx = df(x)
+        f = sp.lambdify(x, f_sym, "numpy")
+        df = sp.lambdify(x, df_sym, "numpy")
 
-        data.append([i, a, b, x, fx])
+        st.latex(f"f(x) = {sp.latex(f_sym)}")
+        st.latex(f"f'(x) = {sp.latex(df_sym)}")
 
-        if abs(fx) < tol:
-            break
-
-        if df(a) * fx < 0:
-            b = x
+        # =========================
+        # VALIDACIÓN (como MATLAB)
+        # =========================
+        if df(a) * df(b) > 0:
+            st.error("❌ f'(a)*f'(b) debe ser < 0. Cambia el intervalo.")
         else:
-            a = x
 
-    return pd.DataFrame(data, columns=["Iteración", "a", "b", "x*", "df(x*)"])
+            iter_list = []
+            m_prev = 0
 
-# ==============================
-# NAVEGACIÓN
-# ==============================
-if menu == "Inicio":
-    st.write("Sistema de optimización no lineal basado en el PDF de clase.")
+            for i in range(int(max_iter)):
 
-elif menu == "1. Bisección (1 variable)":
+                m = (a + b) / 2
 
-    st.header("Método de Bisección - Optimización no restringida")
+                fa = df(a)
+                fm = df(m)
 
-    st.image("/mnt/data/image(1120).png", caption="Ejemplo del método en diapositivas")
+                error = abs(m - m_prev) if i > 0 else abs(b - a)
 
-    st.latex(r"f(x)=12x - 3x^4 - 2x^6")
-    st.latex(r"f'(x)=12(1 - x^3 - x^5)")
+                iter_list.append([i, a, b, m, fa, fm, error])
 
-    st.write("### Parámetros del método")
-    a = st.number_input("Valor inicial a", value=0.0)
-    b = st.number_input("Valor inicial b", value=2.0)
-    tol = st.number_input("Tolerancia", value=0.0001, format="%.5f")
+                if abs(fm) < tol or error < tol:
+                    break
 
-    if st.button("Ejecutar Bisección"):
+                if fa * fm < 0:
+                    b = m
+                else:
+                    a = m
 
-        df_result = biseccion(a, b, tol)
+                m_prev = m
 
-        st.write("### Tabla de iteraciones")
-        st.dataframe(df_result)
+            # =========================
+            # TABLA
+            # =========================
+            df_table = pd.DataFrame(iter_list, columns=[
+                "Iter", "a", "b", "m", "f'(a)", "f'(m)", "Error"
+            ])
 
-        st.write("### Resultado aproximado")
-        st.success(f"x* ≈ {df_result.iloc[-1, 3]}")
+            st.subheader("📊 Iteraciones")
+            st.dataframe(df_table)
 
-        # gráfico
-        xs = np.linspace(a, b, 200)
-        ys = f(xs)
+            x_opt = df_table["m"].iloc[-1]
+            y_opt = f(x_opt)
 
-        plt.figure()
-        plt.plot(xs, ys)
-        plt.axvline(df_result.iloc[-1, 3], color="red")
-        plt.title("Función objetivo")
-        st.pyplot(plt)
+            st.success(f"✔ Óptimo aproximado: x = {x_opt}")
+            st.success(f"✔ f(x) = {y_opt}")
 
-elif menu == "2. Varias variables":
-    st.header("Pendiente implementación")
+            # =========================
+            # GRÁFICA
+            # =========================
+            st.subheader("📈 Gráfica")
 
-elif menu == "3. Linealmente restringida":
-    st.header("Pendiente implementación")
+            xs = np.linspace(x_opt - 3, x_opt + 3, 300)
+            ys = f(xs)
 
-elif menu == "4. Cuadrática":
-    st.header("Pendiente implementación")
+            plt.figure()
+            plt.plot(xs, ys, label="f(x)")
+            plt.axvline(x_opt, color="red", linestyle="--", label="Óptimo")
+            plt.scatter([x_opt], [y_opt], color="red")
+
+            plt.grid()
+            plt.legend()
+
+            st.pyplot(plt)
+
+    except Exception as e:
+        st.error(f"Error: {e}")
