@@ -1,86 +1,113 @@
 import streamlit as st
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
 
 # ==============================
-# CONFIGURACIÓN DE PÁGINA
+# CONFIGURACIÓN
 # ==============================
 st.set_page_config(
-    page_title="Examen Final - Investigación de Operaciones",
+    page_title="Examen Final - IO",
     layout="wide"
 )
 
 # ==============================
-# ENCABEZADO PRINCIPAL
+# HEADER
 # ==============================
 st.title("📘 Examen Final de Investigación de Operaciones")
 st.subheader("Programación No Lineal")
 
-st.markdown("---")
-
-# ==============================
-# INTEGRANTES
-# ==============================
 st.sidebar.title("👨‍🎓 Integrantes")
-st.sidebar.write("• Jean Sumba")
-st.sidebar.write("• Juan Pacheco")
+st.sidebar.write("Jean Sumba")
+st.sidebar.write("Juan Pacheco")
 
-st.sidebar.markdown("---")
-
-# ==============================
-# MENÚ PRINCIPAL
-# ==============================
 menu = st.sidebar.selectbox(
-    "📌 Seleccione el tema",
+    "Seleccione el tema",
     [
         "Inicio",
-        "1. Optimización no restringida (1 variable)",
-        "2. Optimización no restringida (varias variables)",
-        "3. Optimización restringida linealmente",
-        "4. Optimización cuadrática"
+        "1. Bisección (1 variable)",
+        "2. Varias variables",
+        "3. Linealmente restringida",
+        "4. Cuadrática"
     ]
 )
 
 # ==============================
-# PÁGINA INICIO
+# FUNCIONES DEL EJEMPLO (DIAPOSITIVAS)
+# ==============================
+def f(x):
+    return 12*x - 3*x**4 - 2*x**6
+
+def df(x):
+    return 12*(1 - x**3 - x**5)
+
+# ==============================
+# BISSECTION METHOD (como diapositivas)
+# ==============================
+def biseccion(a, b, tol=1e-4, max_iter=50):
+    data = []
+
+    for i in range(max_iter):
+        x = (a + b) / 2
+        fx = df(x)
+
+        data.append([i, a, b, x, fx])
+
+        if abs(fx) < tol:
+            break
+
+        if df(a) * fx < 0:
+            b = x
+        else:
+            a = x
+
+    return pd.DataFrame(data, columns=["Iteración", "a", "b", "x*", "df(x*)"])
+
+# ==============================
+# NAVEGACIÓN
 # ==============================
 if menu == "Inicio":
-    st.write("## Bienvenido al sistema")
-    st.write("""
-Este proyecto corresponde al **examen final de Investigación de Operaciones**.
+    st.write("Sistema de optimización no lineal basado en el PDF de clase.")
 
-Permite resolver problemas de **programación no lineal** basados en métodos vistos en clase y en el documento proporcionado:
+elif menu == "1. Bisección (1 variable)":
 
-- Método de Bisección  
-- Método de Newton  
-- Gradiente  
-- Optimización cuadrática  
+    st.header("Método de Bisección - Optimización no restringida")
 
-Selecciona una opción en el menú para comenzar.
-    """)
+    st.image("/mnt/data/image(1120).png", caption="Ejemplo del método en diapositivas")
 
-# ==============================
-# 1 VARIABLE
-# ==============================
-elif menu == "1. Optimización no restringida (1 variable)":
-    st.header("🔹 Optimización no restringida de una sola variable")
-    st.write("Aquí se implementarán métodos como Bisección y Newton para una variable.")
+    st.latex(r"f(x)=12x - 3x^4 - 2x^6")
+    st.latex(r"f'(x)=12(1 - x^3 - x^5)")
 
-# ==============================
-# VARIAS VARIABLES
-# ==============================
-elif menu == "2. Optimización no restringida (varias variables)":
-    st.header("🔹 Optimización no restringida de varias variables")
-    st.write("Aquí se implementarán métodos de gradiente y Newton multivariable.")
+    st.write("### Parámetros del método")
+    a = st.number_input("Valor inicial a", value=0.0)
+    b = st.number_input("Valor inicial b", value=2.0)
+    tol = st.number_input("Tolerancia", value=0.0001, format="%.5f")
 
-# ==============================
-# RESTRICCIÓN LINEAL
-# ==============================
-elif menu == "3. Optimización restringida linealmente":
-    st.header("🔹 Optimización con restricciones lineales")
-    st.write("Aquí se aplicará programación lineal (método gráfico o simplex).")
+    if st.button("Ejecutar Bisección"):
 
-# ==============================
-# CUADRÁTICA
-# ==============================
-elif menu == "4. Optimización cuadrática":
-    st.header("🔹 Optimización cuadrática")
-    st.write("Aquí se resolverán funciones cuadráticas con métodos numéricos o analíticos.")
+        df_result = biseccion(a, b, tol)
+
+        st.write("### Tabla de iteraciones")
+        st.dataframe(df_result)
+
+        st.write("### Resultado aproximado")
+        st.success(f"x* ≈ {df_result.iloc[-1, 3]}")
+
+        # gráfico
+        xs = np.linspace(a, b, 200)
+        ys = f(xs)
+
+        plt.figure()
+        plt.plot(xs, ys)
+        plt.axvline(df_result.iloc[-1, 3], color="red")
+        plt.title("Función objetivo")
+        st.pyplot(plt)
+
+elif menu == "2. Varias variables":
+    st.header("Pendiente implementación")
+
+elif menu == "3. Linealmente restringida":
+    st.header("Pendiente implementación")
+
+elif menu == "4. Cuadrática":
+    st.header("Pendiente implementación")
