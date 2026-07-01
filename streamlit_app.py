@@ -66,31 +66,10 @@ Selecciona una opción en el menú para comenzar.
 # 1 VARIABLE
 # ==============================
 elif menu == "1. Optimización no restringida (1 variable)":
+    
     st.header("🔹 Optimización no restringida de una sola variable")
     st.write("Aquí se implementarán métodos como Bisección y Newton para una variable.")
-
-# ==============================
-# VARIAS VARIABLES
-# ==============================
-elif menu == "2. Optimización no restringida (varias variables)":
-    st.header("🔹 Optimización no restringida de varias variables")
-    st.write("Aquí se implementarán métodos de gradiente y Newton multivariable.")
-
-# ==============================
-# RESTRICCIÓN LINEAL
-# ==============================
-elif menu == "3. Optimización restringida linealmente":
-    st.header("🔹 Optimización con restricciones lineales")
-    st.write("Aquí se aplicará programación lineal (método gráfico o simplex).")
-
-# ==============================
-# CUADRÁTICA
-# ==============================
-elif menu == "4. Optimización cuadrática":
-    st.header("🔹 Optimización cuadrática")
-    st.write("Aquí se resolverán funciones cuadráticas con métodos numéricos o analíticos.")
-
-st.header("🔹 Optimización no restringida (1 variable)")
+    st.header("🔹 Optimización no restringida (1 variable)")
 st.subheader("📌 Método de Bisección (basado en f'(x)=0)")
 
 x = sp.Symbol('x')
@@ -191,3 +170,26 @@ if st.button("🚀 Ejecutar Bisección"):
 
     except Exception as e:
         st.error(f"Error: {e}")
+
+# ==============================
+# VARIAS VARIABLES
+# ==============================
+elif menu == "2. Optimización no restringida (varias variables)":
+    st.header("🔹 Optimización no restringida de varias variables")
+    st.write("Aquí se implementarán métodos de gradiente y Newton multivariable.")
+
+# ==============================
+# RESTRICCIÓN LINEAL
+# ==============================
+elif menu == "3. Optimización restringida linealmente":
+    st.header("🔹 Optimización con restricciones lineales")
+    st.write("Aquí se aplicará programación lineal (método gráfico o simplex).")
+
+# ==============================
+# CUADRÁTICA
+# ==============================
+elif menu == "4. Optimización cuadrática":
+    st.header("🔹 Optimización cuadrática")
+    st.write("Aquí se resolverán funciones cuadráticas con métodos numéricos o analíticos.")
+
+
