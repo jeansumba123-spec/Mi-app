@@ -90,21 +90,40 @@ elif menu == "1. Optimización no restringida (1 variable)":
     if st.button("🚀 Ejecutar Bisección"):
 
         try:
+            # =========================
+            # FUNCIONES
+            # =========================
             f_sym = sp.sympify(func_input)
             df_sym = sp.diff(f_sym, x)
 
             f = sp.lambdify(x, f_sym, "numpy")
             df = sp.lambdify(x, df_sym, "numpy")
 
+            # =========================
+            # TEXTO TIPO INFORME (como MATLAB)
+            # =========================
+            st.markdown("## 📄 Análisis del problema")
+
+            st.write("Se busca encontrar un punto crítico resolviendo:")
+            st.latex("f'(x) = 0")
+
+            st.write("Función original:")
             st.latex(f"f(x) = {sp.latex(f_sym)}")
+
+            st.write("Derivada:")
             st.latex(f"f'(x) = {sp.latex(df_sym)}")
 
+            # =========================
+            # VALIDACIÓN
+            # =========================
             if df(a) * df(b) > 0:
-                st.error("❌ f'(a)*f'(b) debe ser < 0. Cambia el intervalo.")
+                st.error("❌ El método no es válido: f'(a)*f'(b) debe ser negativo.")
             else:
 
                 iter_list = []
-                m_prev = 0
+                m_prev = None
+
+                st.markdown("## 🔁 Proceso iterativo")
 
                 for i in range(int(max_iter)):
 
@@ -113,9 +132,15 @@ elif menu == "1. Optimización no restringida (1 variable)":
                     fa = df(a)
                     fm = df(m)
 
-                    error = abs(m - m_prev) if i > 0 else abs(b - a)
+                    error = abs(m - m_prev) if m_prev is not None else abs(b - a)
 
-                    iter_list.append([i, a, b, m, fa, fm, error])
+                    iter_list.append([
+                        i, a, b, m, fa, fm, error
+                    ])
+
+                    st.write(
+                        f"Iteración {i}: a={a:.4f}, b={b:.4f}, m={m:.4f}, f'(m)={fm:.4f}, error={error:.6f}"
+                    )
 
                     if abs(fm) < tol or error < tol:
                         break
@@ -127,30 +152,53 @@ elif menu == "1. Optimización no restringida (1 variable)":
 
                     m_prev = m
 
-                import pandas as pd
+                # =========================
+                # TABLA FINAL (tipo libro)
+                # =========================
                 df_table = pd.DataFrame(iter_list, columns=[
-                    "Iter", "a", "b", "m", "f'(a)", "f'(m)", "Error"
+                    "Iteración", "a", "b", "x_medio", "f'(a)", "f'(m)", "Error"
                 ])
 
-                st.subheader("📊 Iteraciones")
-                st.dataframe(df_table)
+                st.markdown("## 📊 Tabla de iteraciones (Método de Bisección)")
+                st.dataframe(df_table, use_container_width=True)
 
-                x_opt = df_table["m"].iloc[-1]
+                # =========================
+                # RESULTADO FINAL
+                # =========================
+                x_opt = df_table["x_medio"].iloc[-1]
                 y_opt = f(x_opt)
 
-                st.success(f"✔ Óptimo: x = {x_opt}")
+                st.markdown("## 🎯 Resultado final")
+
+                st.success(f"✔ Punto óptimo aproximado: x = {x_opt}")
                 st.success(f"✔ f(x) = {y_opt}")
 
-                import matplotlib.pyplot as plt
-                import numpy as np
+                # =========================
+                # INTERPRETACIÓN (como libro / MATLAB)
+                # =========================
+                st.markdown("## 🧠 Interpretación")
+
+                st.write("""
+El método de bisección aplicado a la derivada permite aproximar el punto donde:
+
+- f'(x) ≈ 0  
+- Esto indica un punto crítico de la función  
+- Dependiendo de la segunda derivada, puede ser mínimo o máximo local  
+                """)
+
+                # =========================
+                # GRÁFICA
+                # =========================
+                st.markdown("## 📈 Gráfica de la función")
 
                 xs = np.linspace(x_opt - 3, x_opt + 3, 300)
                 ys = f(xs)
 
                 plt.figure()
                 plt.plot(xs, ys, label="f(x)")
-                plt.axvline(x_opt, color="red", linestyle="--")
+                plt.axvline(x_opt, color="red", linestyle="--", label="Óptimo")
                 plt.scatter([x_opt], [y_opt], color="red")
+
                 plt.grid()
                 plt.legend()
 
