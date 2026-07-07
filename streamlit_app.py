@@ -128,15 +128,92 @@ def simbolos_n(n: int):
 
 
 def texto_limpio(texto: str) -> str:
-    """Permite escribir ^ en lugar de ** y elimina espacios extremos."""
-    return texto.strip().replace("^", "**")
+    """
+    Normaliza texto matemático para evitar errores típicos al copiar desde diapositivas:
+    - x_{1}, x_1, x₁  -> x1
+    - ≤, ≥            -> <=, >=
+    - ^               -> **
+    - 4x1x2           -> 4*x1*x2
+    - 2x1^2           -> 2*x1**2
+    """
+    t = str(texto).strip()
+
+    # Normalizar símbolos comunes copiados desde Word/PPT/PDF
+    replacements = {
+        "≤": "<=", "≥": ">=", "−": "-", "–": "-", "—": "-",
+        "·": "*", "×": "*", "^": "**",
+        "₀": "0", "₁": "1", "₂": "2", "₃": "3", "₄": "4",
+        "₅": "5", "₆": "6", "₇": "7", "₈": "8", "₉": "9",
+    }
+    for a, b in replacements.items():
+        t = t.replace(a, b)
+
+    # Quitar envolturas LaTeX simples y convertir x_{1}, x_1 a x1
+    t = t.replace("\\left", "").replace("\\right", "")
+    t = t.replace("\\cdot", "*").replace("\\times", "*")
+    t = re.sub(r"x\s*_\s*\{\s*(\d+)\s*\}", r"x\1", t)
+    t = re.sub(r"x\s*_\s*(\d+)", r"x\1", t)
+
+    # Si el usuario pega algo como f(x1,x2)=..., quedarse con el lado derecho
+    if "=" in t and not any(op in t for op in ["<=", ">=", "=="]):
+        left, right = t.split("=", 1)
+        if "f" in left or "F" in left:
+            t = right
+
+    # Evitar que SymPy interprete 4x1x2 como 4*x*1*x*2
+    # Insertar * entre número y variable xN, entre xN y xM, y entre ) y xN / número y (
+    t = re.sub(r"(\d)(x\d+)", r"\1*\2", t)
+    t = re.sub(r"(x\d+)(x\d+)", r"\1*\2", t)
+    t = re.sub(r"(x\d+)(\()", r"\1*\2", t)
+    t = re.sub(r"(\))(x\d+)", r"\1*\2", t)
+    t = re.sub(r"(\d)(\()", r"\1*\2", t)
+    t = re.sub(r"(\))(\d)", r"\1*\2", t)
+
+    return t.strip()
 
 
 def parsear_expresion(expr_str: str, n: int):
     symbols = simbolos_n(n)
     local_dict = {f"x{i+1}": symbols[i] for i in range(n)}
-    local_dict.update({"sin": sp.sin, "cos": sp.cos, "tan": sp.tan, "exp": sp.exp, "log": sp.log, "sqrt": sp.sqrt})
-    return parse_expr(texto_limpio(expr_str), local_dict=local_dict, transformations=TRANSFORMATIONS)
+    local_dict.update({
+        "sin": sp.sin, "cos": sp.cos, "tan": sp.tan,
+        "exp": sp.exp, "log": sp.log, "ln": sp.log, "sqrt": sp.sqrt,
+        "pi": sp.pi, "E": sp.E,
+    })
+    expr_txt = texto_limpio(expr_str)
+    expr = parse_expr(expr_txt, local_dict=local_dict, transformations=TRANSFORMATIONS, evaluate=True)
+
+    # Detectar variables no reconocidas. Ejemplo: si alguien escribió x4 en un problema 2D.
+    extras = expr.free_symbols - set(symbols)
+    if extras:
+        raise ValueError(
+            "Hay variables no reconocidas en la expresión: "
+            + ", ".join(sorted(str(s) for s in extras))
+            + f". Para este módulo use solo: {', '.join(str(s) for s in symbols)}."
+        )
+    return sp.expand(expr)
+
+
+def convertir_a_float_seguro(valor, contexto="expresion"):
+    """Convierte un valor simbólico a float solo si ya no tiene variables libres."""
+    valor_s = sp.N(valor)
+    if hasattr(valor_s, "free_symbols") and valor_s.free_symbols:
+        variables = ", ".join(sorted(str(v) for v in valor_s.free_symbols))
+        raise ValueError(
+            f"No se puede convertir a numero en {contexto}. "
+            f"Quedaron variables sin reemplazar: {variables}. "
+            "Revise que use x1, x2 y potencias con **, por ejemplo: x1**2."
+        )
+    return float(valor_s)
+
+
+def matriz_a_numpy_segura(M, contexto="matriz"):
+    M = sp.Matrix(M)
+    out = np.zeros(M.shape, dtype=float)
+    for i in range(M.rows):
+        for j in range(M.cols):
+            out[i, j] = convertir_a_float_seguro(M[i, j], f"{contexto}[{i+1},{j+1}]")
+    return out
 
 
 def crear_funcion_nd(expr_str: str, n: int):
@@ -151,11 +228,11 @@ def crear_funcion_nd(expr_str: str, n: int):
 
     def f(x):
         x = np.array(x, dtype=float)
-        return float(f_lamb(*x))
+        return float(np.asarray(f_lamb(*x), dtype=float).item())
 
     def grad(x):
         x = np.array(x, dtype=float)
-        return np.array([float(g(*x)) for g in grad_lamb], dtype=float)
+        return np.array([float(np.asarray(g(*x), dtype=float).item()) for g in grad_lamb], dtype=float)
 
     def hess(x):
         x = np.array(x, dtype=float)
@@ -212,7 +289,7 @@ def parsear_restricciones(text: str, n: int):
     symbols = simbolos_n(n)
 
     for raw in text.strip().splitlines():
-        line = raw.strip()
+        line = texto_limpio(raw.strip())
         if not line:
             continue
 
@@ -733,7 +810,8 @@ st.sidebar.markdown(
     """
     ### Recomendaciones
     - Use `*` para multiplicar: `4*x1*x2`.
-    - Tambien puede usar `^` para potencias.
+    - Use `**` para potencias: `x1**2`.
+    - Si pega `^` desde diapositivas, el programa intenta convertirlo automaticamente.
     - En restricciones use `<=`, `>=` o `=`.
     """
 )
@@ -748,7 +826,7 @@ if opcion.startswith("1"):
     with col1:
         st.markdown('<div class="info-card">', unsafe_allow_html=True)
         st.markdown("### Datos del problema")
-        expr_str = st.text_input("Funcion f(x):", value="x^3 - 6*x^2 + 9*x + 1")
+        expr_str = st.text_input("Funcion f(x):", value="x**3 - 6*x**2 + 9*x + 1")
         metodo = st.selectbox("Metodo:", ["Biseccion", "Newton"])
         tipo = st.selectbox("Objetivo:", ["Minimizar", "Maximizar"])
         c1, c2 = st.columns(2)
@@ -953,8 +1031,8 @@ elif opcion.startswith("4"):
         st.markdown("### Datos del problema cuadratico")
         tipo = st.selectbox("Objetivo:", ["Maximizar", "Minimizar"])
         expr_str = st.text_area(
-            "Funcion objetivo f(x1,x2):",
-            value="15*x1 + 30*x2 + 4*x1*x2 - 2*x1^2 - 4*x2^2",
+            "Funcion objetivo f(x1,x2) - use ** para potencias:",
+            value="15*x1 + 30*x2 + 4*x1*x2 - 2*x1**2 - 4*x2**2",
             height=90,
         )
         restricciones_str = st.text_area(
@@ -986,7 +1064,7 @@ elif opcion.startswith("4"):
                 x_opt = res.x
                 f_opt = f(x_opt)
 
-                H_num = np.array(H, dtype=float)
+                H_num = matriz_a_numpy_segura(H, "Hessiana")
                 eig_H = np.linalg.eigvals(H_num)
                 if tipo == "Maximizar" and np.all(eig_H < -1e-8):
                     clasificacion = "Concava: maximo confiable"
@@ -1019,7 +1097,7 @@ elif opcion.startswith("4"):
                     st.latex(sp.latex(H))
                     st.write("**Matriz Q = -H:**")
                     st.latex(sp.latex(Q_diapo))
-                    st.write(f"**Constante k:** {float(const):.6f}")
+                    st.write(f"**Constante k:** {convertir_a_float_seguro(const, 'constante k'):.6f}")
                     st.write(f"**Autovalores de H:** {np.round(eig_H, 6)}")
 
                 with t3:
