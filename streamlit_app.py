@@ -813,7 +813,11 @@ def history_view() -> None:
             with c2:
                 fig = fig_from_record(record)
                 if fig is not None:
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(
+                        fig,
+                        use_container_width=True,
+                        key=f"history_plot_{index}_{record.get('timestamp', '')}_{record.get('type', '')}_{record.get('label', '')}",
+                    )
                 elif record.get("image_png"):
                     st.image(record["image_png"], caption="Gráfico guardado")
                 else:
