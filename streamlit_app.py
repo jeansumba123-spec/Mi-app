@@ -1,1121 +1,598 @@
-import streamlit as st
-import numpy as np
-import sympy as sp
-import pandas as pd
-import plotly.graph_objects as go
-from scipy.optimize import minimize
-from scipy.spatial import ConvexHull
-from sympy.parsing.sympy_parser import (
-    parse_expr,
-    standard_transformations,
-    implicit_multiplication_application,
-    convert_xor,
-)
-import itertools
-import re
+from __future__ import annotations
 
-# ============================================================
-# CONFIGURACION GENERAL
-# ============================================================
+import io
+import re
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Callable, Dict, List, Optional, Tuple
+
+import numpy as np
+import pandas as pd
+import plotly.express as px
+import streamlit as st
+import sympy as sp
+from scipy.optimize import minimize
+from scipy.stats import chi2_contingency
+
+try:
+    from docx import Document
+except Exception:  # pragma: no cover
+    Document = None
+
 st.set_page_config(
-    page_title="Programacion No Lineal | UCuenca",
+    page_title="Programación no lineal y análisis de datos",
     page_icon="📈",
     layout="wide",
-    initial_sidebar_state="expanded",
 )
 
-CSS = """
-<style>
-    .stApp {
-        background: linear-gradient(135deg, #eef5ff 0%, #f8fbff 45%, #ffffff 100%);
+PALETTE = {
+    "primary": "#1A548C",
+    "primary_dark": "#0F304F",
+    "accent": "#008C7A",
+    "soft": "#F0F7FA",
+    "danger": "#BF332E",
+    "success": "#338C40",
+    "warning": "#ED9E1F",
+}
+
+VARIABLE_CATALOG = {
+    "Demográficas": [
+        ("Edad", ["edad"]),
+        ("Género al nacer", ["sexo", "genero", "género"]),
+        ("Ingresos", ["ingreso", "renta"]),
+        ("Nivel de instrucción", ["nivel de instruccion", "nivel de instrucción", "instruccion", "instrucción"]),
+        ("Zona de residencia", ["zona de residencia", "residencia"]),
+    ],
+    "Uso": [
+        ("Estación", ["estacion", "estación"]),
+        ("Zona de destino", ["zona de destino", "destino"]),
+        ("Motivo de viaje", ["motivo de viaje", "motivo"]),
+        ("Frecuencia de uso", ["frecuencia", "utiliza"]),
+        ("Transporte anterior", ["transporte anterior"]),
+        ("Bus anterior", ["bus anterior"]),
+    ],
+    "Percepción": [
+        ("Satisfacción", ["satisfaccion", "satisfacción", "grado de satisfaccion", "grado de satisfacción"]),
+        ("Factor de cambio", ["factor de cambio", "factor"]),
+        ("Sugerencia", ["sugerencia", "observacion", "observación"]),
+    ],
+}
+
+BIVARIABLE_CATALOG = [
+    ("Género vs Satisfacción", ["sexo", "genero", "género"], ["satisfaccion", "satisfacción"]),
+    ("Edad vs Frecuencia de uso", ["edad"], ["frecuencia", "utiliza"]),
+    ("Ingresos vs Transporte anterior", ["ingreso", "renta"], ["transporte anterior"]),
+    ("Motivo de viaje vs Frecuencia de uso", ["motivo de viaje", "motivo"], ["frecuencia", "utiliza"]),
+    ("Nivel de instrucción vs Satisfacción", ["nivel de instruccion", "nivel de instrucción", "instruccion", "instrucción"], ["satisfaccion", "satisfacción"]),
+    ("Edad vs Factor de cambio", ["edad"], ["factor de cambio", "factor"]),
+    ("Ingresos vs Factor de cambio", ["ingreso", "renta"], ["factor de cambio", "factor"]),
+    ("Estación vs Motivo de viaje", ["estacion", "estación"], ["motivo de viaje", "motivo"]),
+]
+
+
+def init_state() -> None:
+    defaults = {
+        "workbooks": {},
+        "active_file": None,
+        "history": [],
+        "records": [],
     }
-    .main-card {
-        background: linear-gradient(135deg, #08203a 0%, #0f4c81 100%);
-        padding: 24px 28px;
-        border-radius: 22px;
-        color: white;
-        box-shadow: 0 10px 28px rgba(8, 32, 58, 0.18);
-        margin-bottom: 18px;
-    }
-    .main-card h1 {
-        margin: 0;
-        font-size: 2.05rem;
-        font-weight: 800;
-        letter-spacing: 0.5px;
-        color: white;
-    }
-    .main-card h3 {
-        margin: 4px 0 8px 0;
-        color: #b9d8ff;
-        font-weight: 500;
-    }
-    .main-card p {
-        margin: 0;
-        color: #e5f0ff;
-    }
-    .info-card {
-        background: white;
-        padding: 18px 20px;
-        border-radius: 18px;
-        border: 1px solid #dce8f7;
-        box-shadow: 0 6px 18px rgba(23, 53, 85, 0.08);
-        margin-bottom: 14px;
-    }
-    .metric-box {
-        background: linear-gradient(135deg, #ffffff 0%, #edf6ff 100%);
-        border: 1px solid #dce8f7;
-        border-radius: 16px;
-        padding: 14px 16px;
-        box-shadow: 0 4px 12px rgba(23, 53, 85, 0.06);
-        margin-bottom: 10px;
-    }
-    .metric-title {
-        color: #57708f;
-        font-size: 0.84rem;
-        margin-bottom: 3px;
-    }
-    .metric-value {
-        color: #08203a;
-        font-size: 1.15rem;
-        font-weight: 750;
-    }
-    .stButton>button {
-        background: linear-gradient(135deg, #008C7A 0%, #00A98F 100%);
-        color: white;
-        font-weight: 800;
-        border-radius: 12px;
-        border: none;
-        width: 100%;
-        padding: 0.7rem 1rem;
-        box-shadow: 0 6px 16px rgba(0, 140, 122, 0.22);
-    }
-    .stButton>button:hover {
-        background: linear-gradient(135deg, #006B5D 0%, #008C7A 100%);
-        color: white;
-    }
-    div[data-testid="stSidebar"] {
-        background: #071d33;
-    }
-    div[data-testid="stSidebar"] * {
-        color: #eef7ff;
-    }
-    div[data-testid="stSidebar"] .stRadio label {
-        color: #eef7ff !important;
-    }
-</style>
-"""
-st.markdown(CSS, unsafe_allow_html=True)
-
-st.markdown(
-    """
-    <div class="main-card">
-        <h1>PROGRAMACION NO LINEAL</h1>
-        <h3>Universidad de Cuenca</h3>
-        <p><b>Materia:</b> Investigacion de Operaciones | <b>Carrera:</b> Ingenieria en Telecomunicaciones</p>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-# ============================================================
-# UTILIDADES GENERALES
-# ============================================================
-TRANSFORMATIONS = standard_transformations + (implicit_multiplication_application, convert_xor)
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
 
 
-def simbolos_n(n: int):
-    return tuple(sp.Symbol(f"x{i+1}", real=True) for i in range(n))
+def add_history(text: str, record: Optional[dict] = None) -> None:
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    st.session_state.history.append(f"{timestamp} | {text}")
+    if record is not None:
+        record["timestamp"] = timestamp
+        st.session_state.records.append(record)
 
 
-def texto_limpio(texto: str) -> str:
-    """
-    Normaliza texto matemático para evitar errores típicos al copiar desde diapositivas:
-    - x_{1}, x_1, x₁  -> x1
-    - ≤, ≥            -> <=, >=
-    - ^               -> **
-    - 4x1x2           -> 4*x1*x2
-    - 2x1^2           -> 2*x1**2
-    """
-    t = str(texto).strip()
-
-    # Normalizar símbolos comunes copiados desde Word/PPT/PDF
-    replacements = {
-        "≤": "<=", "≥": ">=", "−": "-", "–": "-", "—": "-",
-        "·": "*", "×": "*", "^": "**",
-        "₀": "0", "₁": "1", "₂": "2", "₃": "3", "₄": "4",
-        "₅": "5", "₆": "6", "₇": "7", "₈": "8", "₉": "9",
-    }
-    for a, b in replacements.items():
-        t = t.replace(a, b)
-
-    # Quitar envolturas LaTeX simples y convertir x_{1}, x_1 a x1
-    t = t.replace("\\left", "").replace("\\right", "")
-    t = t.replace("\\cdot", "*").replace("\\times", "*")
-    t = re.sub(r"x\s*_\s*\{\s*(\d+)\s*\}", r"x\1", t)
-    t = re.sub(r"x\s*_\s*(\d+)", r"x\1", t)
-
-    # Si el usuario pega algo como f(x1,x2)=..., quedarse con el lado derecho
-    if "=" in t and not any(op in t for op in ["<=", ">=", "=="]):
-        left, right = t.split("=", 1)
-        if "f" in left or "F" in left:
-            t = right
-
-    # Evitar que SymPy interprete 4x1x2 como 4*x*1*x*2
-    # Insertar * entre número y variable xN, entre xN y xM, y entre ) y xN / número y (
-    t = re.sub(r"(\d)(x\d+)", r"\1*\2", t)
-    t = re.sub(r"(x\d+)(x\d+)", r"\1*\2", t)
-    t = re.sub(r"(x\d+)(\()", r"\1*\2", t)
-    t = re.sub(r"(\))(x\d+)", r"\1*\2", t)
-    t = re.sub(r"(\d)(\()", r"\1*\2", t)
-    t = re.sub(r"(\))(\d)", r"\1*\2", t)
-
-    return t.strip()
+def normalize_name(value: str) -> str:
+    return str(value).strip().lower()
 
 
-def parsear_expresion(expr_str: str, n: int):
-    symbols = simbolos_n(n)
-    local_dict = {f"x{i+1}": symbols[i] for i in range(n)}
-    local_dict.update({
-        "sin": sp.sin, "cos": sp.cos, "tan": sp.tan,
-        "exp": sp.exp, "log": sp.log, "ln": sp.log, "sqrt": sp.sqrt,
-        "pi": sp.pi, "E": sp.E,
-    })
-    expr_txt = texto_limpio(expr_str)
-    expr = parse_expr(expr_txt, local_dict=local_dict, transformations=TRANSFORMATIONS, evaluate=True)
-
-    # Detectar variables no reconocidas. Ejemplo: si alguien escribió x4 en un problema 2D.
-    extras = expr.free_symbols - set(symbols)
-    if extras:
-        raise ValueError(
-            "Hay variables no reconocidas en la expresión: "
-            + ", ".join(sorted(str(s) for s in extras))
-            + f". Para este módulo use solo: {', '.join(str(s) for s in symbols)}."
-        )
-    return sp.expand(expr)
+def find_column(data: pd.DataFrame, patterns: List[str]) -> Optional[str]:
+    columns = list(data.columns)
+    for pattern in patterns:
+        p = normalize_name(pattern)
+        for col in columns:
+            if p in normalize_name(col):
+                return col
+    return None
 
 
-def convertir_a_float_seguro(valor, contexto="expresion"):
-    """Convierte un valor simbólico a float solo si ya no tiene variables libres."""
-    valor_s = sp.N(valor)
-    if hasattr(valor_s, "free_symbols") and valor_s.free_symbols:
-        variables = ", ".join(sorted(str(v) for v in valor_s.free_symbols))
-        raise ValueError(
-            f"No se puede convertir a numero en {contexto}. "
-            f"Quedaron variables sin reemplazar: {variables}. "
-            "Revise que use x1, x2 y potencias con **, por ejemplo: x1**2."
-        )
-    return float(valor_s)
+def clean_series(series: pd.Series) -> pd.Series:
+    cleaned = series.dropna()
+    if cleaned.dtype == object:
+        cleaned = cleaned.astype(str).str.strip()
+        cleaned = cleaned[cleaned != ""]
+    return cleaned
 
 
-def matriz_a_numpy_segura(M, contexto="matriz"):
-    M = sp.Matrix(M)
-    out = np.zeros(M.shape, dtype=float)
-    for i in range(M.rows):
-        for j in range(M.cols):
-            out[i, j] = convertir_a_float_seguro(M[i, j], f"{contexto}[{i+1},{j+1}]")
-    return out
+def as_labels(series: pd.Series) -> pd.Series:
+    return clean_series(series).astype(str).str.strip()
 
 
-def crear_funcion_nd(expr_str: str, n: int):
-    symbols = simbolos_n(n)
-    expr = parsear_expresion(expr_str, n)
-    grad_expr = [sp.diff(expr, s) for s in symbols]
-    hess_expr = sp.Matrix([[sp.diff(g, s2) for s2 in symbols] for g in grad_expr])
-
-    f_lamb = sp.lambdify(symbols, expr, "numpy")
-    grad_lamb = [sp.lambdify(symbols, g, "numpy") for g in grad_expr]
-    hess_lamb = sp.lambdify(symbols, hess_expr, "numpy")
-
-    def f(x):
-        x = np.array(x, dtype=float)
-        return float(np.asarray(f_lamb(*x), dtype=float).item())
-
-    def grad(x):
-        x = np.array(x, dtype=float)
-        return np.array([float(np.asarray(g(*x), dtype=float).item()) for g in grad_lamb], dtype=float)
-
-    def hess(x):
-        x = np.array(x, dtype=float)
-        return np.array(hess_lamb(*x), dtype=float)
-
-    return f, grad, hess, expr, grad_expr, hess_expr
+def as_numeric(series: pd.Series) -> pd.Series:
+    return pd.to_numeric(clean_series(series), errors="coerce").dropna()
 
 
-def crear_funcion_1d(expr_str: str):
-    f, grad, hess, expr, grad_expr, hess_expr = crear_funcion_nd(expr_str, 1)
-
-    def fp(x):
-        return float(grad([x])[0])
-
-    def fpp(x):
-        return float(hess([x])[0, 0])
-
-    def f1(x):
-        return float(f([x]))
-
-    return f1, fp, fpp, expr, grad_expr[0], hess_expr[0, 0]
+def frequency_table(series: pd.Series) -> pd.DataFrame:
+    labels = as_labels(series)
+    counts = labels.value_counts(dropna=True, sort=False)
+    result = pd.DataFrame({"Categoría": counts.index.astype(str), "Frecuencia": counts.values})
+    total = result["Frecuencia"].sum()
+    result["Porcentaje"] = np.where(total > 0, result["Frecuencia"] / total * 100, 0).round(2)
+    return result
 
 
-def parse_vector(text: str, n: int | None = None):
-    vals = [float(x.strip()) for x in text.replace(";", ",").split(",") if x.strip()]
-    if n is not None and len(vals) != n:
-        raise ValueError(f"El vector debe tener {n} valores. Se recibieron {len(vals)}.")
-    return np.array(vals, dtype=float)
+def load_workbook(uploaded_file) -> pd.DataFrame:
+    name = uploaded_file.name.lower()
+    if name.endswith(".csv"):
+        return pd.read_csv(uploaded_file)
+    if name.endswith((".xlsx", ".xls")):
+        return pd.read_excel(uploaded_file)
+    raise ValueError("Formato no soportado. Usa CSV, XLSX o XLS.")
 
 
-def parse_matrix(text: str):
-    rows = []
-    for line in text.strip().splitlines():
-        if line.strip():
-            rows.append([float(x.strip()) for x in line.split(",")])
-    return np.array(rows, dtype=float)
+def sidebar() -> str:
+    st.sidebar.title("📌 Menú")
+    uploaded = st.sidebar.file_uploader(
+        "Cargar archivos Excel o CSV",
+        type=["xlsx", "xls", "csv"],
+        accept_multiple_files=True,
+    )
+    if uploaded:
+        for file in uploaded:
+            try:
+                st.session_state.workbooks[file.name] = load_workbook(file)
+                st.session_state.active_file = file.name
+            except Exception as exc:
+                st.sidebar.error(f"No se pudo cargar {file.name}: {exc}")
+
+    if st.session_state.workbooks:
+        names = list(st.session_state.workbooks.keys())
+        current_index = names.index(st.session_state.active_file) if st.session_state.active_file in names else 0
+        st.session_state.active_file = st.sidebar.selectbox("Archivo activo", names, index=current_index)
+    else:
+        st.sidebar.info("Aún no hay archivos cargados.")
+
+    total_rows = sum(len(df) for df in st.session_state.workbooks.values())
+    active_cols = 0
+    if st.session_state.active_file:
+        active_cols = st.session_state.workbooks[st.session_state.active_file].shape[1]
+    st.sidebar.metric("Archivos", len(st.session_state.workbooks))
+    st.sidebar.metric("Registros totales", total_rows)
+    st.sidebar.metric("Variables activas", active_cols)
+
+    return st.sidebar.radio(
+        "Vista",
+        ["Inicio", "Programación no lineal", "Análisis univariable", "Análisis bivariable", "Historial y exportación", "Ayuda"],
+    )
 
 
-def detectar_operador(linea: str):
-    for op in ["<=", ">=", "="]:
-        if op in linea:
-            return op
-    raise ValueError(f"No se encontro operador <=, >= o = en la restriccion: {linea}")
+def active_data() -> Optional[pd.DataFrame]:
+    name = st.session_state.active_file
+    if not name:
+        return None
+    return st.session_state.workbooks.get(name)
 
 
-def parsear_restricciones(text: str, n: int):
-    """
-    Acepta dos formatos:
-    1) Simbolico: x1 + 2*x2 <= 30
-    2) Por coeficientes: 1,2,30,<=
-    Devuelve una lista de restricciones simbolicas en forma expr <= 0, expr >= 0 o expr == 0.
-    """
-    restricciones = []
-    symbols = simbolos_n(n)
+def home_view() -> None:
+    st.title("📈 App de programación no lineal y análisis de datos")
+    st.write(
+        "Esta app transforma la lógica del proyecto MATLAB/AppDesigner a Streamlit y agrega un módulo para resolver problemas de programación no lineal."
+    )
+    c1, c2, c3 = st.columns(3)
+    c1.info("Carga Excel/CSV")
+    c2.info("Optimiza funciones con restricciones")
+    c3.info("Exporta historial y resultados")
+    if active_data() is not None:
+        st.subheader(f"Vista previa: {st.session_state.active_file}")
+        st.dataframe(active_data().head(30), use_container_width=True)
 
-    for raw in text.strip().splitlines():
-        line = texto_limpio(raw.strip())
+
+@dataclass
+class ParsedProblem:
+    variables: List[str]
+    objective: Callable[[np.ndarray], float]
+    objective_sympy: sp.Expr
+    constraints: List[dict]
+    bounds: List[Tuple[Optional[float], Optional[float]]]
+
+
+def parse_variables(text: str) -> List[str]:
+    variables = [x.strip() for x in text.split(",") if x.strip()]
+    if not variables:
+        raise ValueError("Debes escribir al menos una variable, por ejemplo: x,y")
+    if len(set(variables)) != len(variables):
+        raise ValueError("Las variables no deben repetirse.")
+    return variables
+
+
+def parse_bounds(text: str, variables: List[str]) -> List[Tuple[Optional[float], Optional[float]]]:
+    if not text.strip():
+        return [(None, None) for _ in variables]
+    result: Dict[str, Tuple[Optional[float], Optional[float]]] = {var: (None, None) for var in variables}
+    for raw in text.splitlines():
+        line = raw.strip()
         if not line:
             continue
-
-        # Formato antiguo por comas: a1,a2,...,b,<=
-        if "," in line and not any(v in line for v in ["x1", "x2", "x3"]):
-            parts = [p.strip() for p in line.split(",") if p.strip()]
-            if len(parts) != n + 2:
-                raise ValueError(f"Restriccion por coeficientes invalida: {line}")
-            coeffs = np.array([float(p) for p in parts[:n]], dtype=float)
-            val = float(parts[n])
-            op = parts[n + 1]
-            expr = sum(coeffs[i] * symbols[i] for i in range(n)) - val
-        else:
-            op = detectar_operador(line)
-            lhs, rhs = line.split(op, 1)
-            expr = parsear_expresion(lhs, n) - parsear_expresion(rhs, n)
-
-        if op not in ["<=", ">=", "="]:
-            raise ValueError(f"Operador no soportado: {op}. Use <=, >= o =.")
-        restricciones.append({"expr": sp.expand(expr), "op": op, "texto": line})
-
-    return restricciones
+        if ":" not in line:
+            raise ValueError(f"Límite inválido: {line}. Usa formato x:0,10")
+        var, bounds = [part.strip() for part in line.split(":", 1)]
+        if var not in variables:
+            raise ValueError(f"La variable {var} no está en la lista de variables.")
+        pieces = [p.strip() for p in bounds.split(",")]
+        if len(pieces) != 2:
+            raise ValueError(f"Límite inválido para {var}. Usa x:min,max")
+        low = None if pieces[0] in ("", "None", "none", "-inf") else float(pieces[0])
+        high = None if pieces[1] in ("", "None", "none", "inf") else float(pieces[1])
+        result[var] = (low, high)
+    return [result[var] for var in variables]
 
 
-def restricciones_scipy(restricciones, n: int):
-    symbols = simbolos_n(n)
-    cons = []
-    for r in restricciones:
-        expr = r["expr"]
-        lamb = sp.lambdify(symbols, expr, "numpy")
+def make_numeric_function(expr: sp.Expr, symbols: List[sp.Symbol]) -> Callable[[np.ndarray], float]:
+    func = sp.lambdify(symbols, expr, modules=["numpy"])
 
-        def fun(x, lamb=lamb, op=r["op"]):
-            val = float(lamb(*np.array(x, dtype=float)))
-            if op == "<=":
-                return -val   # expr <= 0  => -expr >= 0
-            if op == ">=":
-                return val    # expr >= 0
-            return val        # expr == 0
-
-        cons.append({"type": "eq" if r["op"] == "=" else "ineq", "fun": fun})
-    return cons
-
-
-def restricciones_a_A_b(restricciones, n: int):
-    """Convierte restricciones lineales a A x <= b. Las igualdades se duplican."""
-    symbols = simbolos_n(n)
-    A, b = [], []
-    for r in restricciones:
-        expr = sp.expand(r["expr"])
-        # expr = a*x - b <= 0
-        coeffs = [float(expr.coeff(s)) for s in symbols]
-        const = float(expr.subs({s: 0 for s in symbols}))
-        residuo = sp.expand(expr - sum(expr.coeff(s) * s for s in symbols) - const)
-        if residuo != 0:
-            raise ValueError("Las restricciones deben ser lineales para este metodo.")
-
-        # coeffs*x + const <= 0  => coeffs*x <= -const
-        if r["op"] == "<=":
-            A.append(coeffs)
-            b.append(-const)
-        elif r["op"] == ">=":
-            A.append([-c for c in coeffs])
-            b.append(const)
-        else:  # igualdad
-            A.append(coeffs)
-            b.append(-const)
-            A.append([-c for c in coeffs])
-            b.append(const)
-    return np.array(A, dtype=float), np.array(b, dtype=float)
-
-
-def evaluar_factibilidad(x, restricciones, n: int, tol: float = 1e-7):
-    symbols = simbolos_n(n)
-    vals = []
-    for r in restricciones:
-        lamb = sp.lambdify(symbols, r["expr"], "numpy")
-        val = float(lamb(*np.array(x, dtype=float)))
-        if r["op"] == "<=":
-            ok = val <= tol
-        elif r["op"] == ">=":
-            ok = val >= -tol
-        else:
-            ok = abs(val) <= tol
-        vals.append(ok)
-    return all(vals)
-
-
-def formato_vector(x):
-    return "(" + ", ".join([f"{v:.6f}" for v in np.array(x, dtype=float)]) + ")"
-
-
-def mostrar_metricas(x_opt, f_opt, clasificacion=""):
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.markdown(f"""
-        <div class="metric-box">
-            <div class="metric-title">Punto optimo aproximado</div>
-            <div class="metric-value">{formato_vector(x_opt)}</div>
-        </div>
-        """, unsafe_allow_html=True)
-    with c2:
-        st.markdown(f"""
-        <div class="metric-box">
-            <div class="metric-title">Valor de la funcion</div>
-            <div class="metric-value">{f_opt:.8f}</div>
-        </div>
-        """, unsafe_allow_html=True)
-    with c3:
-        st.markdown(f"""
-        <div class="metric-box">
-            <div class="metric-title">Clasificacion</div>
-            <div class="metric-value">{clasificacion or 'Calculado'}</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-# ============================================================
-# ALGORITMOS
-# ============================================================
-def biseccion_1d(f_prime, a, b, tol, max_iter):
-    hist = []
-    fa, fb = f_prime(a), f_prime(b)
-    if fa * fb > 0:
-        raise ValueError("El intervalo no encierra una raiz de f'(x). Pruebe con otro [a,b].")
-
-    c = a
-    for i in range(int(max_iter)):
-        c = (a + b) / 2
-        fpc = f_prime(c)
-        hist.append({"Iteracion": i + 1, "a": a, "b": b, "x": c, "f'(x)": fpc})
-        if abs(fpc) < tol or abs(b - a) / 2 < tol:
-            break
-        if f_prime(a) * fpc < 0:
-            b = c
-        else:
-            a = c
-    return c, hist
-
-
-def newton_1d(f_prime, f_double_prime, x0, tol, max_iter):
-    hist = []
-    x = float(x0)
-    for i in range(int(max_iter)):
-        fp = f_prime(x)
-        fpp = f_double_prime(x)
-        hist.append({"Iteracion": i + 1, "x": x, "f'(x)": fp, "f''(x)": fpp})
-        if abs(fp) < tol:
-            break
-        if abs(fpp) < 1e-12:
-            raise ValueError("La segunda derivada es cercana a cero. Newton no puede continuar.")
-        x = x - fp / fpp
-    return x, hist
-
-
-def gradiente_nd(f, grad_f, x0, alpha, tol, max_iter, tipo="Minimizar"):
-    hist = []
-    x = np.array(x0, dtype=float)
-    signo = -1 if tipo == "Minimizar" else 1
-    for i in range(int(max_iter)):
-        g = grad_f(x)
-        row = {"Iteracion": i + 1, "f(x)": f(x), "||grad||": np.linalg.norm(g)}
-        for j, val in enumerate(x):
-            row[f"x{j+1}"] = val
-        hist.append(row)
-        if np.linalg.norm(g) < tol:
-            break
-        x = x + signo * alpha * g
-    return x, hist
-
-
-def newton_nd(f, grad_f, hess_f, x0, tol, max_iter, tipo="Minimizar"):
-    hist = []
-    x = np.array(x0, dtype=float)
-    factor = 1 if tipo == "Minimizar" else -1
-
-    for i in range(int(max_iter)):
-        g_original = grad_f(x)
-        H_original = hess_f(x)
-        g = factor * g_original
-        H = factor * H_original
-        row = {"Iteracion": i + 1, "f(x)": f(x), "||grad||": np.linalg.norm(g_original)}
-        for j, val in enumerate(x):
-            row[f"x{j+1}"] = val
-        hist.append(row)
-        if np.linalg.norm(g_original) < tol:
-            break
+    def wrapped(values: np.ndarray) -> float:
         try:
-            p = np.linalg.solve(H, -g)
-        except np.linalg.LinAlgError:
-            p = -np.linalg.pinv(H) @ g
-
-        # Control simple de paso para evitar saltos enormes
-        paso = 1.0
-        valor_actual = factor * f(x)
-        aceptado = False
-        for _ in range(20):
-            x_trial = x + paso * p
-            if factor * f(x_trial) <= valor_actual + 1e-4 * paso * np.dot(g, p):
-                aceptado = True
-                break
-            paso *= 0.5
-        x = x_trial if aceptado else x + p
-    return x, hist
-
-
-def vertices_factibles(f, restricciones, n, tipo="Minimizar"):
-    A, b = restricciones_a_A_b(restricciones, n)
-    m = A.shape[0]
-    vertices = []
-
-    if m < n:
-        return None, []
-
-    for indices in itertools.combinations(range(m), n):
-        A_sub = A[list(indices), :]
-        b_sub = b[list(indices)]
-        if np.linalg.matrix_rank(A_sub) == n:
-            x = np.linalg.solve(A_sub, b_sub)
-            if np.all(A @ x <= b + 1e-7):
-                vertices.append(x)
-
-    unique = []
-    for v in vertices:
-        if not any(np.linalg.norm(v - u) < 1e-6 for u in unique):
-            unique.append(v)
-
-    hist = []
-    for i, v in enumerate(unique):
-        row = {"Candidato": i + 1, "f(x)": f(v)}
-        for j, val in enumerate(v):
-            row[f"x{j+1}"] = val
-        hist.append(row)
-
-    if not hist:
-        return None, []
-    opt = min(hist, key=lambda d: d["f(x)"]) if tipo == "Minimizar" else max(hist, key=lambda d: d["f(x)"])
-    return np.array([opt[f"x{j+1}"] for j in range(n)], dtype=float), hist
-
-
-def proyectar(y, restricciones, n):
-    cons = restricciones_scipy(restricciones, n)
-    res = minimize(lambda x: np.sum((x - y) ** 2), x0=np.array(y, dtype=float), constraints=cons, method="SLSQP")
-    if not res.success:
-        return np.array(y, dtype=float)
-    return res.x
-
-
-def gradiente_proyectado(f, grad_f, restricciones, n, x0, alpha, tol, max_iter, tipo="Minimizar"):
-    hist = []
-    x = proyectar(np.array(x0, dtype=float), restricciones, n)
-    signo = -1 if tipo == "Minimizar" else 1
-    for i in range(int(max_iter)):
-        g = grad_f(x)
-        row = {"Iteracion": i + 1, "f(x)": f(x), "||grad||": np.linalg.norm(g)}
-        for j, val in enumerate(x):
-            row[f"x{j+1}"] = val
-        hist.append(row)
-        y = x + signo * alpha * g
-        x_new = proyectar(y, restricciones, n)
-        if np.linalg.norm(x_new - x) < tol:
-            x = x_new
-            break
-        x = x_new
-    return x, hist
-
-
-def resolver_general_scipy(f, grad_f, restricciones, n, x0, tipo="Minimizar"):
-    factor = 1 if tipo == "Minimizar" else -1
-    cons = restricciones_scipy(restricciones, n)
-    res = minimize(
-        lambda x: factor * f(x),
-        x0=np.array(x0, dtype=float),
-        jac=lambda x: factor * grad_f(x),
-        constraints=cons,
-        method="SLSQP",
-        options={"ftol": 1e-10, "maxiter": 1000, "disp": False},
-    )
-    return res
-
-
-def extraer_modelo_cuadratico(expr, n):
-    symbols = simbolos_n(n)
-    H = sp.Matrix([[sp.diff(expr, s1, s2) for s2 in symbols] for s1 in symbols])
-    grad0 = sp.Matrix([sp.diff(expr, s).subs({v: 0 for v in symbols}) for s in symbols])
-    const = expr.subs({v: 0 for v in symbols})
-
-    # Forma general: f(x) = const + c^T x + 1/2 x^T H x
-    # Forma de las diapositivas para maximizar: f(x)=c^T x - 1/2 x^T Q x => Q = -H
-    Q_diapo = -H
-    return H, grad0, const, Q_diapo
-
-# ============================================================
-# GRAFICAS MEJORADAS
-# ============================================================
-def layout_plotly(fig, titulo, x_title="x1", y_title="x2"):
-    fig.update_layout(
-        title={"text": titulo, "x": 0.03, "xanchor": "left"},
-        template="plotly_white",
-        height=640,
-        margin=dict(l=30, r=30, t=70, b=35),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        font=dict(size=13),
-        xaxis=dict(title=x_title, showgrid=True, zeroline=True, zerolinewidth=2),
-        yaxis=dict(title=y_title, showgrid=True, zeroline=True, zerolinewidth=2, scaleanchor="x", scaleratio=1),
-    )
-    return fig
-
-
-def graficar_1d(f, x_opt, a, b, hist=None):
-    lo = min(a, b, x_opt) - 2
-    hi = max(a, b, x_opt) + 2
-    xs = np.linspace(lo, hi, 700)
-    ys = np.array([f(x) for x in xs])
-
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines", name="f(x)", line=dict(width=4, color="#0F4C81")))
-    fig.add_trace(go.Scatter(x=[x_opt], y=[f(x_opt)], mode="markers", name="Punto critico", marker=dict(size=15, color="#E63946", symbol="star")))
-
-    if hist:
-        hx = [row["x"] for row in hist if "x" in row]
-        if hx:
-            hy = [f(v) for v in hx]
-            fig.add_trace(go.Scatter(x=hx, y=hy, mode="markers+lines", name="Iteraciones", marker=dict(size=7, color="#2A9D8F"), line=dict(width=2, dash="dot")))
-
-    fig.update_layout(
-        title="Funcion en una variable",
-        template="plotly_white",
-        height=580,
-        xaxis_title="x",
-        yaxis_title="f(x)",
-        margin=dict(l=30, r=30, t=70, b=35),
-    )
-    return fig
-
-
-def puntos_base_para_rango(x_opt, hist=None):
-    pts = []
-    if x_opt is not None:
-        pts.append(np.array(x_opt[:2], dtype=float))
-    if hist:
-        for h in hist:
-            if "x1" in h and "x2" in h:
-                pts.append(np.array([h["x1"], h["x2"]], dtype=float))
-    return pts
-
-
-def rango_grafica_2d(x_opt, restricciones=None, hist=None):
-    pts = puntos_base_para_rango(x_opt, hist)
-    pts.append(np.array([0, 0], dtype=float))
-
-    # Si hay restricciones lineales, tratar de incluir vertices factibles.
-    if restricciones is not None:
-        try:
-            A, b = restricciones_a_A_b(restricciones, 2)
-            for i, j in itertools.combinations(range(A.shape[0]), 2):
-                M = A[[i, j], :]
-                q = b[[i, j]]
-                if np.linalg.matrix_rank(M) == 2:
-                    p = np.linalg.solve(M, q)
-                    if np.all(A @ p <= b + 1e-6):
-                        pts.append(p)
+            val = func(*values)
+            return float(np.asarray(val, dtype=float))
         except Exception:
-            pass
+            return np.inf
 
-    arr = np.array(pts, dtype=float)
-    xmin, ymin = np.min(arr, axis=0)
-    xmax, ymax = np.max(arr, axis=0)
-    if abs(xmax - xmin) < 2:
-        xmin -= 5
-        xmax += 5
-    if abs(ymax - ymin) < 2:
-        ymin -= 5
-        ymax += 5
-    dx = max(2.0, 0.25 * (xmax - xmin))
-    dy = max(2.0, 0.25 * (ymax - ymin))
-    return xmin - dx, xmax + dx, ymin - dy, ymax + dy
+    return wrapped
 
 
-def crear_mascara_factible(X, Y, restricciones):
-    if not restricciones:
-        return np.ones_like(X, dtype=bool)
-    mask = np.ones_like(X, dtype=bool)
-    x1, x2 = simbolos_n(2)
-    for r in restricciones:
-        lamb = sp.lambdify((x1, x2), r["expr"], "numpy")
-        val = lamb(X, Y)
-        if r["op"] == "<=":
-            mask &= val <= 1e-7
-        elif r["op"] == ">=":
-            mask &= val >= -1e-7
-        else:
-            mask &= np.abs(val) <= 1e-3
-    return mask
+def parse_constraint(line: str, symbols_map: Dict[str, sp.Symbol], symbols: List[sp.Symbol]) -> dict:
+    clean = line.strip()
+    if not clean:
+        raise ValueError("Restricción vacía.")
+    if "<=" in clean:
+        left, right = clean.split("<=", 1)
+        expr = sp.sympify(right, locals=symbols_map) - sp.sympify(left, locals=symbols_map)
+        kind = "ineq"
+    elif ">=" in clean:
+        left, right = clean.split(">=", 1)
+        expr = sp.sympify(left, locals=symbols_map) - sp.sympify(right, locals=symbols_map)
+        kind = "ineq"
+    elif "=" in clean:
+        left, right = clean.split("=", 1)
+        expr = sp.sympify(left, locals=symbols_map) - sp.sympify(right, locals=symbols_map)
+        kind = "eq"
+    else:
+        expr = sp.sympify(clean, locals=symbols_map)
+        kind = "ineq"
+    func = make_numeric_function(expr, symbols)
+    return {"type": kind, "fun": func, "text": clean, "expr": expr}
 
 
-def graficar_2d(f, x_opt, hist=None, restricciones=None, titulo="Curvas de nivel y region factible"):
-    xmin, xmax, ymin, ymax = rango_grafica_2d(x_opt, restricciones, hist)
-    x_range = np.linspace(xmin, xmax, 260)
-    y_range = np.linspace(ymin, ymax, 260)
-    X, Y = np.meshgrid(x_range, y_range)
-    Z = np.zeros_like(X, dtype=float)
-    for i in range(X.shape[0]):
-        for j in range(X.shape[1]):
-            try:
-                Z[i, j] = f([X[i, j], Y[i, j]])
-            except Exception:
-                Z[i, j] = np.nan
+def parse_problem(objective_text: str, variable_text: str, x0_text: str, bounds_text: str, constraints_text: str, sense: str) -> Tuple[ParsedProblem, np.ndarray]:
+    variables = parse_variables(variable_text)
+    symbols = sp.symbols(variables)
+    if len(variables) == 1:
+        symbols = [symbols]
+    else:
+        symbols = list(symbols)
+    symbols_map = {name: symbol for name, symbol in zip(variables, symbols)}
+    objective_expr = sp.sympify(objective_text, locals=symbols_map)
+    objective = make_numeric_function(objective_expr, symbols)
+    if sense == "Maximizar":
+        original_objective = objective
+        objective = lambda values: -original_objective(values)
+    x0 = np.array([float(x.strip()) for x in x0_text.split(",") if x.strip()], dtype=float)
+    if len(x0) != len(variables):
+        raise ValueError("El punto inicial debe tener el mismo número de valores que variables.")
+    bounds = parse_bounds(bounds_text, variables)
+    constraints = []
+    for raw in constraints_text.splitlines():
+        if raw.strip():
+            constraints.append(parse_constraint(raw, symbols_map, symbols))
+    return ParsedProblem(variables, objective, objective_expr, constraints, bounds), x0
 
-    mask = crear_mascara_factible(X, Y, restricciones)
-    Z_visible = np.where(mask, Z, np.nan)
 
-    fig = go.Figure()
+def optimization_view() -> None:
+    st.title("🧮 Programación no lineal")
+    st.caption("Resuelve problemas de minimización o maximización con SLSQP de SciPy.")
 
-    if restricciones:
-        fig.add_trace(go.Contour(
-            x=x_range,
-            y=y_range,
-            z=np.where(mask, 1, np.nan),
-            showscale=False,
-            colorscale=[[0, "rgba(46, 196, 182, 0.16)"], [1, "rgba(46, 196, 182, 0.16)"]],
-            contours=dict(start=0, end=1, size=1, coloring="heatmap"),
-            name="Region factible",
-            hoverinfo="skip",
-        ))
+    left, right = st.columns([1, 1])
+    with left:
+        sense = st.selectbox("Tipo de problema", ["Minimizar", "Maximizar"])
+        objective = st.text_input("Función objetivo f(x)", "x**2 + y**2")
+        variables = st.text_input("Variables separadas por coma", "x,y")
+        x0 = st.text_input("Punto inicial", "1,1")
+        bounds = st.text_area("Límites opcionales", "x:0,10\ny:0,10", help="Formato: variable:min,max. Usa vacío para sin límite.")
+        constraints = st.text_area("Restricciones", "x + y >= 5", help="Una por línea. Acepta <=, >= o =.")
+        method = st.selectbox("Método", ["SLSQP", "trust-constr"])
+        run = st.button("Resolver", type="primary")
 
-    fig.add_trace(go.Contour(
-        x=x_range,
-        y=y_range,
-        z=Z_visible,
-        colorscale="Viridis",
-        contours=dict(coloring="heatmap", showlabels=True, labelfont=dict(size=11, color="white")),
-        colorbar=dict(title="f(x1,x2)"),
-        opacity=0.88,
-        name="Funcion objetivo",
-    ))
+    with right:
+        st.markdown("**Ejemplo rápido**")
+        st.code("""Función: x**2 + y**2
+Variables: x,y
+Inicial: 1,1
+Límites:
+x:0,10
+y:0,10
+Restricción:
+x + y >= 5""", language="text")
+        st.warning("Para multiplicar usa *, por ejemplo 2*x. Para potencias usa **, por ejemplo x**2.")
 
-    fig.add_trace(go.Contour(
-        x=x_range,
-        y=y_range,
-        z=Z_visible,
-        contours=dict(coloring="lines", showlabels=False),
-        line=dict(width=1.5, color="rgba(255,255,255,0.65)"),
-        showscale=False,
-        name="Curvas de nivel",
-        hoverinfo="skip",
-    ))
+    if run:
+        try:
+            problem, x0_values = parse_problem(objective, variables, x0, bounds, constraints, sense)
+            scipy_constraints = [{"type": c["type"], "fun": c["fun"]} for c in problem.constraints]
+            result = minimize(
+                problem.objective,
+                x0_values,
+                method=method,
+                bounds=problem.bounds,
+                constraints=scipy_constraints,
+                options={"maxiter": 1000, "disp": False},
+            )
+            final_value = float(result.fun)
+            if sense == "Maximizar":
+                final_value = -final_value
+            solution = pd.DataFrame({"Variable": problem.variables, "Valor óptimo": np.round(result.x, 8)})
+            st.subheader("Resultado")
+            if result.success:
+                st.success("Optimización completada correctamente.")
+            else:
+                st.warning(f"El método terminó con aviso: {result.message}")
+            c1, c2 = st.columns(2)
+            c1.metric("Valor óptimo", f"{final_value:.8g}")
+            c2.metric("Iteraciones", int(getattr(result, "nit", 0)))
+            st.dataframe(solution, use_container_width=True)
+            st.markdown("**Restricciones evaluadas en la solución**")
+            rows = []
+            for c in problem.constraints:
+                rows.append({"Restricción": c["text"], "Tipo SciPy": c["type"], "Valor interno": c["fun"](result.x)})
+            if rows:
+                st.dataframe(pd.DataFrame(rows), use_container_width=True)
+            else:
+                st.info("No se ingresaron restricciones.")
+            add_history(
+                f"Optimización | {sense} | f={objective} | valor={final_value:.6g}",
+                {
+                    "type": "Optimización",
+                    "label": objective,
+                    "table": solution,
+                    "stats": f"{sense}: {objective}\nValor óptimo: {final_value}\nMensaje: {result.message}",
+                },
+            )
 
-    if restricciones:
-        x1, x2 = simbolos_n(2)
-        for idx, r in enumerate(restricciones, 1):
-            expr = sp.expand(r["expr"])
-            # Intentar graficar frontera expr=0
-            try:
-                sol_y = sp.solve(sp.Eq(expr, 0), x2)
-                if sol_y:
-                    y_vals = sp.lambdify(x1, sol_y[0], "numpy")(x_range)
-                    fig.add_trace(go.Scatter(
-                        x=x_range,
-                        y=y_vals,
-                        mode="lines",
-                        name=f"Restriccion {idx}: {r['texto']}",
-                        line=dict(width=3, color="#E76F51"),
-                    ))
-                    continue
-                sol_x = sp.solve(sp.Eq(expr, 0), x1)
-                if sol_x:
-                    x_vals = np.ones_like(y_range) * float(sol_x[0])
-                    fig.add_trace(go.Scatter(
-                        x=x_vals,
-                        y=y_range,
-                        mode="lines",
-                        name=f"Restriccion {idx}: {r['texto']}",
-                        line=dict(width=3, color="#E76F51"),
-                    ))
-            except Exception:
-                pass
+            if len(problem.variables) == 2:
+                st.subheader("Visualización 2D")
+                x_name, y_name = problem.variables
+                x_low, x_high = problem.bounds[0]
+                y_low, y_high = problem.bounds[1]
+                x_low = -10 if x_low is None else x_low
+                x_high = 10 if x_high is None else x_high
+                y_low = -10 if y_low is None else y_low
+                y_high = 10 if y_high is None else y_high
+                xs = np.linspace(x_low, x_high, 80)
+                ys = np.linspace(y_low, y_high, 80)
+                xx, yy = np.meshgrid(xs, ys)
+                z = np.zeros_like(xx, dtype=float)
+                raw_func = make_numeric_function(problem.objective_sympy, [sp.Symbol(x_name), sp.Symbol(y_name)])
+                for i in range(xx.shape[0]):
+                    for j in range(xx.shape[1]):
+                        z[i, j] = raw_func(np.array([xx[i, j], yy[i, j]]))
+                fig = px.contour(x=xs, y=ys, z=z, labels={"x": x_name, "y": y_name, "color": "f"})
+                fig.add_scatter(x=[result.x[0]], y=[result.x[1]], mode="markers+text", text=["Óptimo"], textposition="top center")
+                st.plotly_chart(fig, use_container_width=True)
+        except Exception as exc:
+            st.error(f"No se pudo resolver el problema: {exc}")
 
-    if hist:
-        hx = [h["x1"] for h in hist if "x1" in h and "x2" in h]
-        hy = [h["x2"] for h in hist if "x1" in h and "x2" in h]
-        if hx:
-            fig.add_trace(go.Scatter(
-                x=hx,
-                y=hy,
-                mode="lines+markers",
-                name="Iteraciones",
-                marker=dict(size=8, color="#FFD166"),
-                line=dict(width=3, color="#FFD166"),
-            ))
 
-    fig.add_trace(go.Scatter(
-        x=[x_opt[0]],
-        y=[x_opt[1]],
-        mode="markers+text",
-        text=["Optimo"],
-        textposition="top center",
-        name="Optimo",
-        marker=dict(size=18, color="#D00000", symbol="star", line=dict(width=2, color="white")),
-    ))
-
-    return layout_plotly(fig, titulo)
-
-# ============================================================
-# SIDEBAR
-# ============================================================
-st.sidebar.markdown("## MENU")
-opcion = st.sidebar.radio(
-    "Seleccione el modulo:",
-    [
-        "1. Una variable",
-        "2. Varias variables",
-        "3. Restringida linealmente",
-        "4. Programacion cuadratica",
-    ],
-)
-st.sidebar.markdown("---")
-st.sidebar.info(f"Modulo activo:\n\n{opcion}")
-st.sidebar.markdown(
-    """
-    ### Recomendaciones
-    - Use `*` para multiplicar: `4*x1*x2`.
-    - Use `**` para potencias: `x1**2`.
-    - Si pega `^` desde diapositivas, el programa intenta convertirlo automaticamente.
-    - En restricciones use `<=`, `>=` o `=`.
-    """
-)
-
-# ============================================================
-# MODULO 1
-# ============================================================
-if opcion.startswith("1"):
-    st.markdown("## 1. Optimizacion no restringida de una variable")
-    col1, col2 = st.columns([0.92, 1.7], gap="large")
-
-    with col1:
-        st.markdown('<div class="info-card">', unsafe_allow_html=True)
-        st.markdown("### Datos del problema")
-        expr_str = st.text_input("Funcion f(x):", value="x**3 - 6*x**2 + 9*x + 1")
-        metodo = st.selectbox("Metodo:", ["Biseccion", "Newton"])
-        tipo = st.selectbox("Objetivo:", ["Minimizar", "Maximizar"])
-        c1, c2 = st.columns(2)
-        a = c1.number_input("a:", value=0.0)
-        b = c2.number_input("b:", value=3.0)
-        x0 = st.number_input("x0 Newton:", value=1.5)
-        c3, c4 = st.columns(2)
-        tol = c3.number_input("Tolerancia:", value=0.0001, format="%.6f")
-        max_iter = c4.number_input("Iteraciones:", value=50, min_value=1, step=1)
-        resolver = st.button("Resolver")
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    with col2:
-        if resolver:
-            try:
-                f, fp, fpp, expr, expr_p, expr_pp = crear_funcion_1d(expr_str)
-                if metodo == "Biseccion":
-                    x_opt, hist = biseccion_1d(fp, a, b, tol, max_iter)
-                else:
-                    x_opt, hist = newton_1d(fp, fpp, x0, tol, max_iter)
-                f_opt = f(x_opt)
-                segunda = fpp(x_opt)
-                if segunda > 1e-8:
-                    clasificacion = "Minimo local"
-                elif segunda < -1e-8:
-                    clasificacion = "Maximo local"
-                else:
-                    clasificacion = "No concluyente"
-
-                mostrar_metricas([x_opt], f_opt, clasificacion)
-                t1, t2, t3 = st.tabs(["Respuesta", "Iteraciones", "Grafica"])
-                with t1:
-                    st.latex(f"f(x) = {sp.latex(expr)}")
-                    st.latex(f"f'(x) = {sp.latex(expr_p)}")
-                    st.latex(f"f''(x) = {sp.latex(expr_pp)}")
-                    st.write(f"**Objetivo seleccionado:** {tipo}")
-                    st.write("Nota: el metodo encuentra puntos criticos; la segunda derivada determina si es minimo o maximo local.")
-                with t2:
-                    st.dataframe(pd.DataFrame(hist), use_container_width=True)
-                with t3:
-                    st.plotly_chart(graficar_1d(f, x_opt, a, b, hist), use_container_width=True)
-            except Exception as e:
-                st.error(f"Error: {e}")
-
-# ============================================================
-# MODULO 2
-# ============================================================
-elif opcion.startswith("2"):
-    st.markdown("## 2. Optimizacion no restringida de varias variables")
-    col1, col2 = st.columns([0.92, 1.7], gap="large")
-
-    with col1:
-        st.markdown('<div class="info-card">', unsafe_allow_html=True)
-        st.markdown("### Datos del problema")
-        n = st.selectbox("Numero de variables:", [2, 3])
-        expr_default = "x1^2 + x2^2 - 4*x1 - 6*x2 + 13" if n == 2 else "x1^2 + x2^2 + x3^2"
-        expr_str = st.text_input("Funcion:", value=expr_default)
-        metodo = st.selectbox("Metodo:", ["Gradiente", "Newton", "SciPy SLSQP"])
-        tipo = st.selectbox("Objetivo:", ["Minimizar", "Maximizar"])
-        p0_str = st.text_input("Punto inicial:", value="0,0" if n == 2 else "0,0,0")
-        alpha = st.number_input("Alpha:", value=0.1)
-        c1, c2 = st.columns(2)
-        tol = c1.number_input("Tolerancia:", value=0.0001, format="%.6f")
-        max_iter = c2.number_input("Iteraciones:", value=80, min_value=1, step=1)
-        resolver = st.button("Resolver")
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    with col2:
-        if resolver:
-            try:
-                x0 = parse_vector(p0_str, n)
-                f, grad_f, hess_f, expr, grad_expr, hess_expr = crear_funcion_nd(expr_str, n)
-                if metodo == "Gradiente":
-                    x_opt, hist = gradiente_nd(f, grad_f, x0, alpha, tol, max_iter, tipo)
-                elif metodo == "Newton":
-                    x_opt, hist = newton_nd(f, grad_f, hess_f, x0, tol, max_iter, tipo)
-                else:
-                    res = resolver_general_scipy(f, grad_f, [], n, x0, tipo)
-                    x_opt, hist = res.x, []
-
-                f_opt = f(x_opt)
-                eigvals = np.linalg.eigvals(hess_f(x_opt))
-                if np.all(eigvals > 1e-8):
-                    clasificacion = "Minimo local"
-                elif np.all(eigvals < -1e-8):
-                    clasificacion = "Maximo local"
-                elif np.any(eigvals > 1e-8) and np.any(eigvals < -1e-8):
-                    clasificacion = "Punto silla"
-                else:
-                    clasificacion = "No concluyente"
-
-                mostrar_metricas(x_opt, f_opt, clasificacion)
-                t1, t2, t3 = st.tabs(["Respuesta", "Iteraciones", "Grafica"])
-                with t1:
-                    st.latex(f"f(x) = {sp.latex(expr)}")
-                    st.write("**Gradiente:**")
-                    st.latex(sp.latex(sp.Matrix(grad_expr)))
-                    st.write("**Hessiana:**")
-                    st.latex(sp.latex(hess_expr))
-                    st.write(f"**Autovalores Hessiana:** {np.round(eigvals, 6)}")
-                with t2:
-                    if hist:
-                        st.dataframe(pd.DataFrame(hist), use_container_width=True)
-                    else:
-                        st.info("El metodo SciPy devuelve el optimo directamente, sin tabla de iteraciones detallada.")
-                with t3:
-                    if n == 2:
-                        st.plotly_chart(graficar_2d(f, x_opt, hist, None, "Curvas de nivel"), use_container_width=True)
-                    else:
-                        st.info("La grafica de curvas de nivel esta disponible para 2 variables.")
-            except Exception as e:
-                st.error(f"Error: {e}")
-
-# ============================================================
-# MODULO 3
-# ============================================================
-elif opcion.startswith("3"):
-    st.markdown("## 3. Optimizacion restringida linealmente")
-    col1, col2 = st.columns([0.92, 1.7], gap="large")
-
-    with col1:
-        st.markdown('<div class="info-card">', unsafe_allow_html=True)
-        st.markdown("### Datos del problema")
-        n = st.selectbox("Numero de variables:", [2, 3])
-        expr_str = st.text_input("Funcion objetivo:", value="x1*x2 + 2*x1 + x2")
-        metodo = st.selectbox("Metodo:", ["Gradiente proyectado", "SciPy SLSQP", "Vertices factibles"])
-        tipo = st.selectbox("Objetivo:", ["Maximizar", "Minimizar"])
-        restricciones_str = st.text_area(
-            "Restricciones:",
-            value="x1 <= 4\nx2 <= 6\n3*x1 + 2*x2 <= 18\nx1 >= 0\nx2 >= 0",
-            height=140,
+def univariable_view() -> None:
+    st.title("📊 Análisis univariable")
+    data = active_data()
+    if data is None:
+        st.info("Carga un archivo Excel o CSV desde el menú lateral.")
+        return
+    st.caption(f"Archivo activo: {st.session_state.active_file}")
+    mode = st.radio("Selección de variable", ["Catálogo automático", "Columna manual"], horizontal=True)
+    if mode == "Catálogo automático":
+        group = st.selectbox("Grupo", list(VARIABLE_CATALOG.keys()))
+        label = st.selectbox("Variable", [x[0] for x in VARIABLE_CATALOG[group]])
+        patterns = dict(VARIABLE_CATALOG[group])[label]
+        column = find_column(data, patterns)
+        if column is None:
+            st.error(f"No se encontró una columna compatible con: {label}")
+            return
+    else:
+        column = st.selectbox("Columna", data.columns)
+        label = column
+    chart_type = st.selectbox("Tipo de gráfico", ["Barras", "Pastel", "Pareto"])
+    table = frequency_table(data[column])
+    numeric = as_numeric(data[column])
+    st.subheader(label)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("N válido", int(table["Frecuencia"].sum()))
+    if not table.empty:
+        mode_row = table.loc[table["Frecuencia"].idxmax()]
+        c2.metric("Moda", str(mode_row["Categoría"]))
+        c3.metric("% moda", f"{mode_row['Porcentaje']:.1f}%")
+    if len(numeric) > 0:
+        st.write(f"Media: **{numeric.mean():.2f}** | Mediana: **{numeric.median():.2f}** | Desviación estándar: **{numeric.std():.2f}**")
+    st.dataframe(table, use_container_width=True)
+    if chart_type == "Barras":
+        fig = px.bar(table, x="Categoría", y="Frecuencia", title=label)
+    elif chart_type == "Pastel":
+        fig = px.pie(table, names="Categoría", values="Frecuencia", title=label)
+    else:
+        pareto = table.sort_values("Frecuencia", ascending=False)
+        fig = px.bar(pareto, x="Categoría", y="Frecuencia", title=f"Pareto: {label}")
+    st.plotly_chart(fig, use_container_width=True)
+    if not table.empty:
+        st.success(f"La categoría con mayor presencia en {label} es {mode_row['Categoría']}, con {mode_row['Porcentaje']:.1f}% de los registros válidos.")
+    if st.button("Guardar este análisis en historial"):
+        add_history(
+            f"Univariable | {label} | {st.session_state.active_file}",
+            {"type": "Univariable", "label": label, "table": table, "stats": f"N válido: {int(table['Frecuencia'].sum())}"},
         )
-        p0_str = st.text_input("Punto inicial:", value="1,1" if n == 2 else "1,1,1")
-        alpha = st.number_input("Alpha:", value=0.15)
-        c1, c2 = st.columns(2)
-        tol = c1.number_input("Tol:", value=0.0001, format="%.6f")
-        max_iter = c2.number_input("Iteraciones:", value=100, min_value=1, step=1)
-        resolver = st.button("Resolver")
-        st.markdown('</div>', unsafe_allow_html=True)
+        st.toast("Análisis guardado.")
 
-    with col2:
-        if resolver:
-            try:
-                x0 = parse_vector(p0_str, n)
-                restricciones = parsear_restricciones(restricciones_str, n)
-                f, grad_f, hess_f, expr, grad_expr, hess_expr = crear_funcion_nd(expr_str, n)
 
-                if metodo == "Vertices factibles":
-                    x_opt, hist = vertices_factibles(f, restricciones, n, tipo)
-                    if x_opt is None:
-                        raise ValueError("No se encontraron vertices factibles. Revise las restricciones.")
-                elif metodo == "Gradiente proyectado":
-                    x_opt, hist = gradiente_proyectado(f, grad_f, restricciones, n, x0, alpha, tol, max_iter, tipo)
-                else:
-                    res = resolver_general_scipy(f, grad_f, restricciones, n, x0, tipo)
-                    if not res.success:
-                        st.warning(f"SciPy aviso: {res.message}")
-                    x_opt, hist = res.x, []
+def bivariable_view() -> None:
+    st.title("▦ Análisis bivariable")
+    data = active_data()
+    if data is None:
+        st.info("Carga un archivo Excel o CSV desde el menú lateral.")
+        return
+    st.caption(f"Archivo activo: {st.session_state.active_file}")
+    mode = st.radio("Selección", ["Catálogo automático", "Columnas manuales"], horizontal=True)
+    if mode == "Catálogo automático":
+        pair_label = st.selectbox("Cruce", [x[0] for x in BIVARIABLE_CATALOG])
+        selected = next(x for x in BIVARIABLE_CATALOG if x[0] == pair_label)
+        left_col = find_column(data, selected[1])
+        right_col = find_column(data, selected[2])
+        if left_col is None or right_col is None:
+            st.error("No se encontraron una o ambas columnas para este cruce.")
+            return
+    else:
+        left_col = st.selectbox("Variable fila", data.columns)
+        right_col = st.selectbox("Variable columna", data.columns)
+        pair_label = f"{left_col} vs {right_col}"
+    chart_type = st.selectbox("Tipo de gráfico", ["Heatmap", "Barras agrupadas", "Barras apiladas"])
+    temp = pd.DataFrame({"Fila": as_labels(data[left_col]), "Columna": as_labels(data[right_col])}).dropna()
+    table = pd.crosstab(temp["Fila"], temp["Columna"])
+    if table.empty:
+        st.warning("No hay pares válidos para analizar.")
+        return
+    chi2, p_value, dof, expected = chi2_contingency(table)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Chi-cuadrado", f"{chi2:.3f}")
+    c2.metric("gl", int(dof))
+    c3.metric("p-valor", f"{p_value:.4f}")
+    if p_value < 0.05:
+        st.success("Asociación significativa al 5%.")
+    elif p_value < 0.10:
+        st.warning("Señal moderada, no concluyente al 5%.")
+    else:
+        st.error("No hay evidencia suficiente de asociación.")
+    st.dataframe(table, use_container_width=True)
+    if chart_type == "Heatmap":
+        fig = px.imshow(table, text_auto=True, aspect="auto", title=pair_label)
+    else:
+        plot_data = table.reset_index().melt(id_vars="Fila", var_name="Columna", value_name="Frecuencia")
+        barmode = "group" if chart_type == "Barras agrupadas" else "stack"
+        fig = px.bar(plot_data, x="Fila", y="Frecuencia", color="Columna", barmode=barmode, title=pair_label)
+    st.plotly_chart(fig, use_container_width=True)
+    if st.button("Guardar este cruce en historial"):
+        add_history(
+            f"Bivariable | {pair_label} | {st.session_state.active_file} | p={p_value:.4f}",
+            {"type": "Bivariable", "label": pair_label, "table": table.reset_index(), "stats": f"Chi2={chi2:.3f}; gl={dof}; p={p_value:.4f}"},
+        )
+        st.toast("Cruce guardado.")
 
-                f_opt = f(x_opt)
-                mostrar_metricas(x_opt, f_opt, "Factible" if evaluar_factibilidad(x_opt, restricciones, n) else "Revisar")
-                t1, t2, t3 = st.tabs(["Respuesta", "Tabla", "Grafica"])
-                with t1:
-                    st.latex(f"f(x) = {sp.latex(expr)}")
-                    st.write("**Restricciones ingresadas:**")
-                    for r in restricciones:
-                        st.code(r["texto"])
-                    st.write(f"**Metodo:** {metodo}")
-                    if metodo == "Vertices factibles":
-                        st.warning("Para funciones no lineales, revisar solo vertices no garantiza siempre el optimo global. Se recomienda SciPy SLSQP o gradiente proyectado.")
-                with t2:
-                    if hist:
-                        st.dataframe(pd.DataFrame(hist), use_container_width=True)
-                    else:
-                        st.info("Este metodo no genera tabla iterativa detallada.")
-                with t3:
-                    if n == 2:
-                        st.plotly_chart(graficar_2d(f, x_opt, hist, restricciones, "Funcion objetivo con region factible"), use_container_width=True)
-                    else:
-                        st.info("La grafica esta disponible para 2 variables.")
-            except Exception as e:
-                st.error(f"Error: {e}")
 
-# ============================================================
-# MODULO 4 - CUADRATICA DIRECTA DESDE LA FUNCION
-# ============================================================
-elif opcion.startswith("4"):
-    st.markdown("## 4. Programacion cuadratica")
+def build_excel_report() -> bytes:
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+        summary = pd.DataFrame({"Historial": st.session_state.history})
+        summary.to_excel(writer, index=False, sheet_name="Historial")
+        for i, record in enumerate(st.session_state.records, start=1):
+            sheet = f"{i:02d}_{record['type']}"[:31]
+            record["table"].to_excel(writer, index=False, sheet_name=sheet)
+    return output.getvalue()
+
+
+def build_docx_report() -> Optional[bytes]:
+    if Document is None:
+        return None
+    document = Document()
+    document.add_heading("Reporte de análisis", level=1)
+    document.add_paragraph(f"Generado: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    document.add_heading("Historial", level=2)
+    for item in st.session_state.history:
+        document.add_paragraph(item)
+    for record in st.session_state.records:
+        document.add_heading(f"{record['type']}: {record['label']}", level=2)
+        document.add_paragraph(record.get("stats", ""))
+        table_df = record["table"].reset_index(drop=True)
+        doc_table = document.add_table(rows=1, cols=len(table_df.columns))
+        for j, col in enumerate(table_df.columns):
+            doc_table.rows[0].cells[j].text = str(col)
+        for _, row in table_df.head(80).iterrows():
+            cells = doc_table.add_row().cells
+            for j, value in enumerate(row):
+                cells[j].text = str(value)
+    output = io.BytesIO()
+    document.save(output)
+    return output.getvalue()
+
+
+def history_view() -> None:
+    st.title("🕘 Historial y exportación")
+    if not st.session_state.history:
+        st.info("Aún no hay análisis guardados en esta sesión.")
+        return
+    st.text_area("Historial", "\n".join(st.session_state.history), height=260)
+    col1, col2 = st.columns(2)
+    col1.download_button("Descargar reporte Excel", build_excel_report(), "reporte_analisis.xlsx")
+    docx = build_docx_report()
+    if docx is not None:
+        col2.download_button("Descargar reporte Word", docx, "reporte_analisis.docx")
+    if st.button("Limpiar historial"):
+        st.session_state.history = []
+        st.session_state.records = []
+        st.rerun()
+
+
+def help_view() -> None:
+    st.title("📘 Ayuda")
     st.markdown(
         """
-        <div class="info-card">
-        En este modulo ya no es necesario ingresar Q, c y constante por separado. Escriba directamente la funcion completa y las restricciones.
-        El programa identifica la Hessiana, el vector lineal y la matriz Q usada en la forma de las diapositivas.
-        </div>
+### Cómo correr la app
+1. Instala dependencias: `pip install -r requirements.txt`
+2. Ejecuta: `streamlit run app.py`
+3. Abre la dirección local que muestra Streamlit.
+
+### Sintaxis para programación no lineal
+- Multiplicación: `2*x`
+- Potencia: `x**2`
+- Raíz: `sqrt(x)`
+- Funciones: `sin(x)`, `cos(x)`, `exp(x)`, `log(x)`
+- Restricciones: `x + y >= 5`, `x <= 10`, `x + 2*y = 8`
+
+### Archivos de datos
+Puedes cargar `.xlsx`, `.xls` o `.csv`. La app detecta columnas usando palabras clave similares a las usadas en el código MATLAB original.
+        """
+    )
+
+
+def main() -> None:
+    init_state()
+    st.markdown(
+        f"""
+        <style>
+        .stApp {{ background-color: {PALETTE['soft']}; }}
+        section[data-testid="stSidebar"] {{ background-color: {PALETTE['primary_dark']}; }}
+        section[data-testid="stSidebar"] * {{ color: white; }}
+        </style>
         """,
         unsafe_allow_html=True,
     )
-    col1, col2 = st.columns([0.92, 1.7], gap="large")
+    view = sidebar()
+    if view == "Inicio":
+        home_view()
+    elif view == "Programación no lineal":
+        optimization_view()
+    elif view == "Análisis univariable":
+        univariable_view()
+    elif view == "Análisis bivariable":
+        bivariable_view()
+    elif view == "Historial y exportación":
+        history_view()
+    else:
+        help_view()
 
-    with col1:
-        st.markdown('<div class="info-card">', unsafe_allow_html=True)
-        st.markdown("### Datos del problema cuadratico")
-        tipo = st.selectbox("Objetivo:", ["Maximizar", "Minimizar"])
-        expr_str = st.text_area(
-            "Funcion objetivo f(x1,x2) - use ** para potencias:",
-            value="15*x1 + 30*x2 + 4*x1*x2 - 2*x1**2 - 4*x2**2",
-            height=90,
-        )
-        restricciones_str = st.text_area(
-            "Restricciones:",
-            value="x1 + 2*x2 <= 30\nx1 >= 0\nx2 >= 0",
-            height=120,
-        )
-        p0_str = st.text_input("Punto inicial:", value="1,1")
-        resolver = st.button("Resolver cuadratica")
-        st.markdown('</div>', unsafe_allow_html=True)
 
-    with col2:
-        if resolver:
-            try:
-                n = 2
-                x0 = parse_vector(p0_str, n)
-                restricciones = parsear_restricciones(restricciones_str, n)
-                f, grad_f, hess_f, expr, grad_expr, hess_expr = crear_funcion_nd(expr_str, n)
-                H, c_vec, const, Q_diapo = extraer_modelo_cuadratico(expr, n)
-
-                # Verificacion: una funcion cuadratica tiene Hessiana constante.
-                x1, x2 = simbolos_n(2)
-                if any(term.has(x1, x2) for term in list(H)):
-                    st.warning("La funcion parece no ser cuadratica pura, pero se intentara resolver numericamente.")
-
-                res = resolver_general_scipy(f, grad_f, restricciones, n, x0, tipo)
-                if not res.success:
-                    st.warning(f"SciPy aviso: {res.message}")
-                x_opt = res.x
-                f_opt = f(x_opt)
-
-                H_num = matriz_a_numpy_segura(H, "Hessiana")
-                eig_H = np.linalg.eigvals(H_num)
-                if tipo == "Maximizar" and np.all(eig_H < -1e-8):
-                    clasificacion = "Concava: maximo confiable"
-                elif tipo == "Minimizar" and np.all(eig_H > 1e-8):
-                    clasificacion = "Convexa: minimo confiable"
-                elif np.any(eig_H > 1e-8) and np.any(eig_H < -1e-8):
-                    clasificacion = "Indefinida"
-                else:
-                    clasificacion = "Semidefinida / revisar"
-
-                mostrar_metricas(x_opt, f_opt, clasificacion)
-                t1, t2, t3, t4 = st.tabs(["Respuesta", "Modelo matricial", "Restricciones", "Grafica"])
-
-                with t1:
-                    st.latex(f"f(x_1,x_2) = {sp.latex(expr)}")
-                    st.write(f"**Objetivo:** {tipo}")
-                    st.write(f"**x1 optimo:** {x_opt[0]:.8f}")
-                    st.write(f"**x2 optimo:** {x_opt[1]:.8f}")
-                    st.write(f"**f optimo:** {f_opt:.8f}")
-                    st.write(f"**Factibilidad:** {'Cumple restricciones' if evaluar_factibilidad(x_opt, restricciones, n) else 'No cumple, revisar'}")
-
-                with t2:
-                    st.write("**Forma general:**")
-                    st.latex(r"f(x)=k+c^Tx+\frac{1}{2}x^T Hx")
-                    st.write("**Forma usada en las diapositivas para maximizar:**")
-                    st.latex(r"f(x)=c^Tx-\frac{1}{2}x^TQx")
-                    st.write("**Vector c:**")
-                    st.latex(sp.latex(c_vec.T))
-                    st.write("**Hessiana H:**")
-                    st.latex(sp.latex(H))
-                    st.write("**Matriz Q = -H:**")
-                    st.latex(sp.latex(Q_diapo))
-                    st.write(f"**Constante k:** {convertir_a_float_seguro(const, 'constante k'):.6f}")
-                    st.write(f"**Autovalores de H:** {np.round(eig_H, 6)}")
-
-                with t3:
-                    st.write("**Restricciones ingresadas:**")
-                    for r in restricciones:
-                        st.code(r["texto"])
-                    try:
-                        A, b = restricciones_a_A_b(restricciones, n)
-                        st.write("**Forma A x <= b:**")
-                        st.write("A =")
-                        st.dataframe(pd.DataFrame(A, columns=["x1", "x2"]), use_container_width=True)
-                        st.write("b =")
-                        st.dataframe(pd.DataFrame(b, columns=["b"]), use_container_width=True)
-                    except Exception:
-                        st.info("No todas las restricciones se pudieron convertir a A x <= b.")
-
-                with t4:
-                    st.plotly_chart(graficar_2d(f, x_opt, [], restricciones, "Programacion cuadratica: curvas de nivel y region factible"), use_container_width=True)
-
-            except Exception as e:
-                st.error(f"Error: {e}")
+if __name__ == "__main__":
+    main()
